@@ -1,59 +1,24 @@
 /* eslint-disable jsx-a11y/label-has-associated-control */
-import { useState } from "react";
+import { useEffect, useState, useCallback, useMemo } from "react";
 import { useAppBridge } from "@shopify/app-bridge-react";
-import type { ProductItem, DiscountType } from "../../types/bundle.types";
-
-// Types for the resourcePicker payload (narrowed to avoid `any`)
-type PickerImage = { originalSrc?: string; url?: string; src?: string };
-type PickerVariant = {
-  id?: string;
-  sku?: string;
-  title?: string;
-  price?: string;
-};
-type PickerProduct = {
-  id: string;
-  title?: string;
-  variants?: PickerVariant[];
-  images?: PickerImage[];
-};
+import type {
+  ProductItem,
+  DiscountType,
+  PickerVariant,
+  PickerProduct,
+  BundleFormProps,
+} from "../../types";
 import {
   calculateTotal,
   calculateDiscount,
   calculateFinalPrice,
-  validateBundleForm,
 } from "../../utils/bundlePricing";
-
-interface BundleFormProps {
-  initialData?: {
-    name: string;
-    description: string;
-    discountType: DiscountType;
-    discountValue: string;
-    active: boolean;
-    startDate: string;
-    endDate: string;
-    items: ProductItem[];
-  };
-  onSubmit: (data: {
-    name: string;
-    description: string;
-    discountType: DiscountType;
-    discountValue: string;
-    active: boolean;
-    startDate: string;
-    endDate: string;
-    items: ProductItem[];
-  }) => Promise<void>;
-  submitButtonText?: string;
-  onCancel?: () => void;
-}
+import { validateBundleForm } from "../../utils/bundleValidation";
 
 export function BundleForm({
   initialData,
   onSubmit,
-  submitButtonText = "Create Bundle",
-  onCancel,
+  onSubmitRef,
 }: BundleFormProps) {
   const shopify = useAppBridge();
 
@@ -72,49 +37,89 @@ export function BundleForm({
   const [endDate, setEndDate] = useState(initialData?.endDate || "");
   const [items, setItems] = useState<ProductItem[]>(initialData?.items || []);
   const [validationErrors, setValidationErrors] = useState<string[]>([]);
+  const [nameError, setNameError] = useState("");
+  const [discountError, setDiscountError] = useState("");
+  const [itemsError, setItemsError] = useState("");
+  const [dateError, setDateError] = useState("");
 
-  const handleRemoveProduct = (id: string) => {
-    setItems(items.filter((item) => item.id !== id));
-  };
+  const handleSubmitForm = useCallback(async () => {
+    console.log("=== VALIDATION START ===");
+    console.log("handleSubmitForm called", {
+      name,
+      items: items.length,
+      discountType,
+      discountValue,
+      startDate,
+      endDate,
+    });
 
-  const handleEditProduct = async (id: string) => {
-    const selected = (await shopify.resourcePicker({
-      type: "product",
-      multiple: false,
-    })) as PickerProduct[] | null;
+    // Clear previous errors
+    setNameError("");
+    setDiscountError("");
+    setDateError("");
+    setItemsError("");
 
-    if (selected && selected.length > 0) {
-      const product = selected[0] as PickerProduct;
-      const variant =
-        (product.variants && product.variants[0]) || ({} as PickerVariant);
+    const errors = validateBundleForm(
+      name,
+      items,
+      discountType,
+      discountValue,
+      startDate,
+      endDate,
+    );
 
-      setItems(
-        items.map((item) => {
-          if (item.id === id) {
-            return {
-              ...item,
-              productId: String(product.id),
-              variantId: String(variant.id ?? ""),
-              title: String(product.title ?? ""),
-              sku: String(variant.sku ?? "N/A"),
-              variant: String(variant.title ?? ""),
-              price: parseFloat(String(variant.price ?? "0")) || 0,
-              image:
-                (product.images &&
-                  product.images[0] &&
-                  (product.images[0].originalSrc ||
-                    product.images[0].url ||
-                    product.images[0].src)) ||
-                undefined,
-            } as ProductItem;
-          }
-          return item;
-        }),
-      );
+    if (errors.length > 0) {
+      setValidationErrors(errors);
+      window.scrollTo({ top: 0, behavior: "smooth" });
+      return;
     }
-  };
 
-  const handleBrowseProducts = async () => {
+    setValidationErrors([]);
+    try {
+      await onSubmit({
+        name,
+        description,
+        discountType,
+        discountValue,
+        active,
+        startDate,
+        endDate,
+        items,
+      });
+    } catch (error) {
+      console.error("Error in onSubmit:", error);
+    }
+  }, [
+    name,
+    items,
+    discountType,
+    discountValue,
+    startDate,
+    endDate,
+    description,
+    active,
+    onSubmit,
+  ]);
+
+  // Set default startDate on client-side only
+  useEffect(() => {
+    if (!initialData?.startDate && !startDate) {
+      setStartDate(new Date().toISOString().split("T")[0]);
+    }
+  }, []);
+
+  // Expose submit function to parent
+  useEffect(() => {
+    if (onSubmitRef) {
+      onSubmitRef.current = handleSubmitForm;
+    }
+  }, [handleSubmitForm, onSubmitRef]);
+
+  const handleRemoveProduct = useCallback((id: string) => {
+    setItems((prevItems) => prevItems.filter((item) => item.id !== id));
+  }, []);
+
+  const handleBrowseProducts = useCallback(async () => {
     const selected = await shopify.resourcePicker({
       type: "product",
       multiple: true,
@@ -142,40 +147,72 @@ export function BundleForm({
         } as ProductItem;
       });
 
-      setItems([...items, ...newItems]);
+      setItems((prevItems) => [...prevItems, ...newItems]);
     }
-  };
+  }, [shopify]);
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleSubmit = useCallback(
+    async (e: React.FormEvent) => {
+      e.preventDefault();
 
-    const errors = validateBundleForm(name, items, discountType, discountValue);
+      const errors = validateBundleForm(
+        name,
+        items,
+        discountType,
+        discountValue,
+        startDate,
+        endDate,
+      );
 
-    if (errors.length > 0) {
-      setValidationErrors(errors);
-      window.scrollTo({ top: 0, behavior: "smooth" });
-      return;
-    }
+      if (errors.length > 0) {
+        console.log("Validation errors:", errors);
+        setValidationErrors(errors);
+        window.scrollTo({ top: 0, behavior: "smooth" });
+        return;
+      }
 
-    setValidationErrors([]);
-    await onSubmit({
+      setValidationErrors([]);
+      try {
+        await onSubmit({
+          name,
+          description,
+          discountType,
+          discountValue,
+          active,
+          startDate,
+          endDate,
+          items,
+        });
+        console.log("onSubmit completed");
+      } catch (error) {
+        console.error("Error in onSubmit:", error);
+      }
+    },
+    [
       name,
-      description,
+      items,
       discountType,
       discountValue,
-      active,
       startDate,
       endDate,
-      items,
-    });
-  };
+      description,
+      active,
+      onSubmit,
+    ],
+  );
 
-  const total = calculateTotal(items);
-  const discount = calculateDiscount(items, discountType, discountValue);
-  const finalPrice = calculateFinalPrice(items, discountType, discountValue);
+  const total = useMemo(() => calculateTotal(items), [items]);
+  const discount = useMemo(
+    () => calculateDiscount(items, discountType, discountValue),
+    [items, discountType, discountValue],
+  );
+  const finalPrice = useMemo(
+    () => calculateFinalPrice(items, discountType, discountValue),
+    [items, discountType, discountValue],
+  );
 
   return (
-    <form onSubmit={handleSubmit}>
+    <form id="bundle-form" onSubmit={handleSubmit}>
       {validationErrors.length > 0 && (
         <s-section>
           <s-banner tone="critical" heading="Please fix the following errors:">
@@ -188,143 +225,147 @@ export function BundleForm({
         </s-section>
       )}
 
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "1fr 320px",
-          gap: "20px",
-        }}
-      >
-        {/* Left Column */}
-        <s-stack gap="large">
-          {/* Bundle Details */}
-          <s-section>
-            <s-stack gap="base">
-              <s-heading>Bundle details</s-heading>
+      <s-stack gap="large">
+        {/* Bundle Details */}
+        <s-section>
+          <s-stack gap="base">
+            <s-heading>Bundle details</s-heading>
 
-              <s-text-field
-                label="Bundle Name"
-                required
-                value={name}
-                onInput={(e) => setName((e.target as HTMLInputElement).value)}
-                placeholder="e.g., Summer Essentials Pack"
-              />
-
-              <s-text-area
-                label="Description"
-                value={description}
-                onInput={(e) =>
-                  setDescription((e.target as HTMLTextAreaElement).value)
+            <s-text-field
+              label="Bundle Name"
+              required
+              value={name}
+              onInput={(e) => {
+                const value = (e.target as HTMLInputElement).value;
+                setName(value);
+                if (!value.trim()) {
+                  setNameError("Bundle name is required");
+                } else {
+                  setNameError("");
                 }
-                placeholder="Describe the contents and value of this bundle..."
-                rows={4}
-              />
-            </s-stack>
-          </s-section>
+              }}
+              placeholder="e.g., Summer Essentials Pack"
+              error={nameError}
+            />
 
-          {/* Products in Bundle */}
-          <s-section>
-            <s-stack gap="base">
+            <s-text-area
+              label="Description"
+              value={description}
+              onInput={(e) =>
+                setDescription((e.target as HTMLTextAreaElement).value)
+              }
+              placeholder="Describe the contents and value of this bundle..."
+              rows={4}
+            />
+          </s-stack>
+        </s-section>
+
+        {/* Products in Bundle */}
+        <s-section>
+          <s-stack gap="base">
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+              }}
+            >
+              <s-heading>Products in bundle</s-heading>
+              <s-button type="button" onClick={handleBrowseProducts}>
+                Browse products
+              </s-button>
+            </div>
+
+            {items.length > 0 ? (
               <div
                 style={{
                   display: "flex",
-                  justifyContent: "space-between",
-                  alignItems: "center",
+                  flexDirection: "column",
+                  gap: "12px",
                 }}
               >
-                <s-heading>Products in bundle</s-heading>
-                <s-button
-                  type="button"
-                  onClick={handleBrowseProducts}
-                  variant="plain"
-                >
-                  Browse products
-                </s-button>
-              </div>
-
-              {items.length > 0 ? (
-                <div
-                  style={{
-                    display: "flex",
-                    flexDirection: "column",
-                    gap: "12px",
-                  }}
-                >
-                  {items.map((item) => (
+                {items.map((item) => (
+                  <div
+                    key={item.id}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: "16px",
+                      padding: "12px 16px",
+                      border: "1px solid #d1d5db",
+                      borderRadius: "8px",
+                      backgroundColor: "#ffffff",
+                    }}
+                  >
                     <div
-                      key={item.id}
                       style={{
+                        width: "48px",
+                        height: "48px",
+                        backgroundColor: "#f3f4f6",
+                        borderRadius: "6px",
                         display: "flex",
                         alignItems: "center",
-                        gap: "16px",
-                        padding: "12px 16px",
-                        border: "1px solid #d1d5db",
-                        borderRadius: "8px",
-                        backgroundColor: "#ffffff",
+                        justifyContent: "center",
+                        overflow: "hidden",
+                        flexShrink: 0,
                       }}
                     >
-                      <div
-                        style={{
-                          width: "48px",
-                          height: "48px",
-                          backgroundColor: "#f3f4f6",
-                          borderRadius: "6px",
-                          display: "flex",
-                          alignItems: "center",
-                          justifyContent: "center",
-                          overflow: "hidden",
-                          flexShrink: 0,
-                        }}
-                      >
-                        {item.image ? (
-                          <img
-                            src={item.image}
-                            alt={item.title}
-                            style={{
-                              width: "100%",
-                              height: "100%",
-                              objectFit: "cover",
-                            }}
-                          />
-                        ) : (
-                          <s-icon name="image" />
-                        )}
-                      </div>
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <s-text>{item.title}</s-text>
-                      </div>
-                      <div style={{ minWidth: "100px", textAlign: "right" }}>
-                        <s-text>${item.price.toFixed(2)}</s-text>
-                      </div>
-                      <s-button
-                        type="button"
-                        variant="tertiary"
-                        tone="critical"
-                        icon="delete"
-                        onClick={() => handleRemoveProduct(item.id)}
-                      />
+                      {item.image ? (
+                        <img
+                          src={item.image}
+                          alt={item.title}
+                          style={{
+                            width: "100%",
+                            height: "100%",
+                            objectFit: "cover",
+                          }}
+                        />
+                      ) : (
+                        <s-icon type="image" />
+                      )}
                     </div>
-                  ))}
-                </div>
-              ) : (
-                <div
-                  style={{
-                    padding: "40px",
-                    textAlign: "center",
-                    border: "1px dashed var(--s-color-border)",
-                    borderRadius: "var(--s-border-radius-base)",
-                    backgroundColor: "var(--s-color-bg-surface-secondary)",
-                  }}
-                >
-                  <s-text tone="neutral">
-                    No products added yet. Search or browse to add products.
-                  </s-text>
-                </div>
-              )}
-            </s-stack>
-          </s-section>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <s-text>{item.title}</s-text>
+                    </div>
+                    <div style={{ minWidth: "100px", textAlign: "right" }}>
+                      <s-text>${item.price.toFixed(2)}</s-text>
+                    </div>
+                    <s-button
+                      type="button"
+                      variant="tertiary"
+                      tone="critical"
+                      icon="delete"
+                      onClick={() => handleRemoveProduct(item.id)}
+                    />
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div
+                style={{
+                  padding: "40px",
+                  textAlign: "center",
+                  border: "1px dashed var(--s-color-border)",
+                  borderRadius: "var(--s-border-radius-base)",
+                  backgroundColor: "var(--s-color-bg-surface-secondary)",
+                }}
+              >
+                <s-text tone="neutral">
+                  No products added yet. Search or browse to add products.
+                </s-text>
+              </div>
+            )}
+          </s-stack>
+        </s-section>
 
-          {/* Pricing Rules */}
+        {/* Pricing Rules & Summary */}
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "2fr 1fr",
+            gap: "20px",
+          }}
+        >
           <s-section>
             <s-stack gap="base">
               <s-heading>Pricing rules</s-heading>
@@ -338,7 +379,7 @@ export function BundleForm({
                     fontSize: "14px",
                   }}
                 >
-                  Discount Type
+                  <s-text type="strong">Discount Type</s-text>
                 </label>
                 <div style={{ display: "flex", gap: "8px" }}>
                   <s-button
@@ -347,7 +388,6 @@ export function BundleForm({
                       discountType === "percentage" ? "primary" : "secondary"
                     }
                     onClick={() => setDiscountType("percentage")}
-                    style={{ flex: 1 }}
                   >
                     Percentage
                   </s-button>
@@ -355,7 +395,6 @@ export function BundleForm({
                     type="button"
                     variant={discountType === "fixed" ? "primary" : "secondary"}
                     onClick={() => setDiscountType("fixed")}
-                    style={{ flex: 1 }}
                   >
                     Fixed
                   </s-button>
@@ -364,106 +403,27 @@ export function BundleForm({
 
               <s-text-field
                 label={`Discount Value ${discountType === "percentage" ? "(%)" : ""}`}
-                type="number"
                 value={discountValue}
-                onInput={(e) =>
-                  setDiscountValue((e.target as HTMLInputElement).value)
-                }
+                onInput={(e) => {
+                  const value = (e.target as HTMLInputElement).value;
+                  setDiscountValue(value);
+                  const numValue = parseFloat(value);
+                  if (value && (isNaN(numValue) || numValue < 0)) {
+                    setDiscountError("Discount must be a positive number");
+                  } else if (discountType === "percentage" && numValue > 100) {
+                    setDiscountError("Percentage cannot exceed 100%");
+                  } else {
+                    setDiscountError("");
+                  }
+                }}
                 placeholder="0"
-                min="0"
-                step={discountType === "percentage" ? "1" : "0.01"}
-                max={discountType === "percentage" ? "100" : undefined}
                 suffix={discountType === "percentage" ? "%" : ""}
+                error={discountError}
               />
             </s-stack>
           </s-section>
 
-          {/* Availability */}
-          <s-section>
-            <s-stack gap="base">
-              <s-heading>Availability</s-heading>
-
-              <div>
-                <s-stack gap="small">
-                  <div>
-                    <s-text variant="heading">Status</s-text>
-                    <s-text tone="neutral">Draft bundles are hidden</s-text>
-                  </div>
-
-                  <s-button commandFor="status-menu">
-                    {active ? "Active (visible)" : "Draft (hidden)"}
-                  </s-button>
-                  <s-menu
-                    id="status-menu"
-                    accessibilityLabel="Select bundle status"
-                  >
-                    <s-button onClick={() => setActive(false)}>
-                      Draft (hidden)
-                    </s-button>
-                    <s-button
-                      onClick={() => setActive(true)}
-                      disabled={items.length === 0}
-                    >
-                      Active (visible)
-                    </s-button>
-                  </s-menu>
-
-                  {items.length === 0 && active && (
-                    <s-text tone="critical" style={{ fontSize: "13px" }}>
-                      Cannot activate a bundle with no products. Add products
-                      first or save as Draft.
-                    </s-text>
-                  )}
-                </s-stack>
-              </div>
-
-              <div
-                style={{
-                  display: "grid",
-                  gridTemplateColumns: "1fr 1fr",
-                  gap: "12px",
-                }}
-              >
-                <div>
-                  <s-text
-                    variant="heading"
-                    style={{ display: "block", marginBottom: "8px" }}
-                  >
-                    Start Date
-                  </s-text>
-                  <s-date-picker
-                    value={startDate}
-                    onInput={(e) =>
-                      setStartDate((e.target as HTMLInputElement).value)
-                    }
-                  />
-                </div>
-
-                <div>
-                  <s-text
-                    variant="heading"
-                    style={{ display: "block", marginBottom: "8px" }}
-                  >
-                    End Date
-                  </s-text>
-                  <s-date-picker
-                    value={endDate}
-                    onInput={(e) =>
-                      setEndDate((e.target as HTMLInputElement).value)
-                    }
-                  />
-                </div>
-              </div>
-
-              <s-text tone="neutral" style={{ fontSize: "13px" }}>
-                Leave blank for indefinite availability
-              </s-text>
-            </s-stack>
-          </s-section>
-        </s-stack>
-
-        {/* Right Column - Summary */}
-        <div>
+          {/* Summary */}
           <s-section>
             <s-stack gap="base">
               <s-heading>Summary</s-heading>
@@ -530,36 +490,100 @@ export function BundleForm({
                   </div>
                 </s-stack>
               </div>
-
-              <div
-                style={{
-                  display: "flex",
-                  flexDirection: "column",
-                  gap: "8px",
-                  marginTop: "16px",
-                }}
-              >
-                <s-button
-                  type="submit"
-                  variant="primary"
-                  style={{ width: "100%" }}
-                >
-                  {submitButtonText}
-                </s-button>
-                {onCancel && (
-                  <s-button
-                    type="button"
-                    onClick={onCancel}
-                    style={{ width: "100%" }}
-                  >
-                    Cancel
-                  </s-button>
-                )}
-              </div>
             </s-stack>
           </s-section>
         </div>
-      </div>
+
+        {/* Availability */}
+        <s-section>
+          <s-stack gap="base">
+            <s-heading>Availability</s-heading>
+
+            <div>
+              <s-stack gap="small">
+                <div>
+                  <s-text type="strong">Status</s-text>
+                </div>
+
+                <s-stack direction="inline" gap="base">
+                  <s-text tone="neutral">
+                    {active ? "Active" : "Inactive"}
+                  </s-text>
+                  <s-switch
+                    accessibilityLabel="Toggle bundle active status"
+                    checked={active}
+                    onChange={(e) => {
+                      const checked = (e.target as HTMLInputElement).checked;
+                      if (checked && items.length === 0) {
+                        setItemsError(
+                          "Cannot activate a bundle with no products",
+                        );
+                      } else {
+                        setActive(checked);
+                        setItemsError("");
+                      }
+                    }}
+                  />
+                </s-stack>
+                <s-text tone="neutral">
+                  {active
+                    ? "Bundle is visible to customers"
+                    : "Bundle is hidden from customers"}
+                </s-text>
+
+                {itemsError && <s-text tone="critical">{itemsError}</s-text>}
+              </s-stack>
+            </div>
+
+            <s-stack direction="inline" gap="large">
+              <div>
+                <s-text type="strong">Start Date</s-text>
+                <s-date-picker
+                  value={startDate}
+                  onInput={(e) => {
+                    const value = (e.target as HTMLInputElement).value;
+                    setStartDate(value);
+                    if (!value) {
+                      setDateError("Start date is required");
+                    } else if (endDate && new Date(value) > new Date(endDate)) {
+                      setDateError("End date must be after start date");
+                    } else {
+                      setDateError("");
+                    }
+                  }}
+                />
+              </div>
+
+              <div>
+                <s-text type="strong">End Date</s-text>
+                <s-date-picker
+                  value={endDate}
+                  onInput={(e) => {
+                    const value = (e.target as HTMLInputElement).value;
+                    setEndDate(value);
+                    if (!value) {
+                      setDateError("End date is required");
+                    } else if (
+                      startDate &&
+                      new Date(startDate) > new Date(value)
+                    ) {
+                      setDateError("End date must be after start date");
+                    } else {
+                      setDateError("");
+                    }
+                  }}
+                />
+              </div>
+            </s-stack>
+
+            {dateError && <s-text tone="critical">{dateError}</s-text>}
+
+            <s-text tone="neutral">
+              Dates are required for bundle availability
+            </s-text>
+          </s-stack>
+        </s-section>
+      </s-stack>
     </form>
   );
 }

@@ -33,33 +33,5 @@ export function calculateFinalPrice(
   );
 }
 
-export function validateBundleForm(
-  name: string,
-  items: ProductItem[],
-  discountType: DiscountType,
-  discountValue: string,
-): string[] {
-  const errors: string[] = [];
-
-  if (!name.trim()) {
-    errors.push("Bundle name is required");
-  }
-
-  if (items.length === 0) {
-    errors.push("At least one product is required");
-  }
-
-  if (
-    discountType === "percentage" &&
-    discountValue &&
-    parseFloat(discountValue) > 100
-  ) {
-    errors.push("Percentage discount cannot exceed 100%");
-  }
-
-  if (discountValue && parseFloat(discountValue) < 0) {
-    errors.push("Discount value cannot be negative");
-  }
-
-  return errors;
-}
+// Validation logic has been moved to bundleValidation.ts
+// Import from there: import { validateBundleForm } from "../utils/bundleValidation";

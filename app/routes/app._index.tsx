@@ -1,25 +1,20 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import type {
   ActionFunctionArgs,
   HeadersFunction,
   LoaderFunctionArgs,
 } from "react-router";
-import { useLoaderData, useNavigate, useSubmit } from "react-router";
+import {
+  useLoaderData,
+  useNavigate,
+  useSubmit,
+  useActionData,
+} from "react-router";
+import { useAppBridge } from "@shopify/app-bridge-react";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "../shopify.server";
 import db from "../db.server";
-
-interface BundleData {
-  id: string;
-  name: string;
-  description: string | null;
-  discountType: string | null;
-  discountValue: number | null;
-  active: boolean;
-  itemCount: number;
-  price: number;
-  inventory: number;
-}
+import type { BundleListData } from "../types";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { admin, session } = await authenticate.admin(request);
@@ -36,7 +31,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     },
   });
 
-  const bundlesData: BundleData[] = [];
+  const bundlesData: BundleListData[] = [];
   for (const bundle of bundles) {
     const basePrice = bundle.items.length * 25; // Placeholder
 
@@ -50,12 +45,10 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       }
     }
 
-    // Fetch inventory for bundle items from Shopify Admin API
+    // Fetch inventory for bundle items from Shopify Admin API - parallel requests
     let inventory = 0;
     try {
-      const inventories: number[] = [];
-
-      for (const item of bundle.items) {
+      const inventoryPromises = bundle.items.map(async (item) => {
         try {
           const response = await admin.graphql(
             `#graphql
@@ -79,23 +72,21 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
             product.variants &&
             product.variants.nodes.length > 0
           ) {
-            // Use the first variant's inventory as a simple heuristic
             const qty = product.variants.nodes[0].inventoryQuantity;
-            inventories.push(typeof qty === "number" ? qty : 0);
-          } else {
-            inventories.push(0);
+            return typeof qty === "number" ? qty : 0;
           }
+          return 0;
         } catch (err) {
           console.error(
             `Error fetching inventory for product ${item.productId}:`,
             err,
           );
-          inventories.push(0);
+          return 0;
         }
-      }
+      });
 
+      const inventories = await Promise.all(inventoryPromises);
       if (inventories.length > 0) {
-        // For bundle availability, the limiting factor is the minimum inventory
         inventory = Math.max(0, Math.min(...inventories));
       }
     } catch (err) {
@@ -145,8 +136,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
 export default function Index() {
   const { bundles } = useLoaderData<typeof loader>();
+  const actionData = useActionData<{ success?: boolean; error?: string }>();
   const navigate = useNavigate();
   const submit = useSubmit();
+  const shopify = useAppBridge();
   const [searchTerm, setSearchTerm] = useState("");
   const [statusFilter, setStatusFilter] = useState<
     "all" | "active" | "inactive"
@@ -162,11 +155,20 @@ export default function Index() {
   } | null>(null);
   const [deleteConfirmText, setDeleteConfirmText] = useState("");
 
+  // Show toast on delete success or error
+  useEffect(() => {
+    if (actionData?.success) {
+      shopify.toast.show("Bundle deleted successfully");
+    } else if (actionData?.error) {
+      shopify.toast.show(actionData.error, { isError: true });
+    }
+  }, [actionData, shopify]);
+
   const handleEdit = (bundleId: string) => {
     navigate(`/app/bundles/${bundleId}/edit`);
   };
 
-  const handleDeleteClick = (bundleId: string, bundleName: string) => {
+  const handleDelete = (bundleId: string, bundleName: string) => {
     setDeletingBundle({ id: bundleId, name: bundleName });
     setDeleteConfirmText("");
   };
@@ -205,12 +207,12 @@ export default function Index() {
   const paginatedBundles = filteredBundles.slice(startIndex, endIndex);
 
   const handleNextPage = () => {
-    setCurrentPage(currentPage + 1);
+    setCurrentPage((prev) => prev + 1);
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
 
   const handlePreviousPage = () => {
-    setCurrentPage(currentPage - 1);
+    setCurrentPage((prev) => prev - 1);
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
 
@@ -267,6 +269,7 @@ export default function Index() {
           <s-button
             variant="primary"
             icon="plus"
+            accessibilityLabel="plus"
             onClick={() => navigate("/app/bundles/new")}
           >
             Create bundle
@@ -299,6 +302,7 @@ export default function Index() {
               <s-button
                 variant="primary"
                 icon="plus"
+                accessibilityLabel="plus"
                 onClick={() => navigate("/app/bundles/new")}
               >
                 Create your first bundle
@@ -319,9 +323,12 @@ export default function Index() {
                     setSearchTerm((e.target as HTMLInputElement).value)
                   }
                   icon="search"
-                  style={{ flex: 1 }}
                 />
-                <s-button commandFor="status-filter-menu" icon="filter">
+                <s-button
+                  commandFor="status-filter-menu"
+                  icon="filter"
+                  accessibilityLabel="Filter by status"
+                >
                   Status:{" "}
                   {statusFilter === "all"
                     ? "All"
@@ -344,7 +351,11 @@ export default function Index() {
                   </s-button>
                 </s-menu>
 
-                <s-button commandFor="discount-filter-menu" icon="filter">
+                <s-button
+                  commandFor="discount-filter-menu"
+                  icon="money"
+                  accessibilityLabel="Filter by discount type"
+                >
                   Discount:{" "}
                   {discountTypeFilter === "all"
                     ? "All"
@@ -368,16 +379,12 @@ export default function Index() {
                 </s-menu>
               </div>
               <s-table-header-row>
-                <s-table-header listSlot="primary">Bundle Name</s-table-header>
-                <s-table-header listSlot="inline">Status</s-table-header>
-                <s-table-header format="numeric" listSlot="labeled">
-                  Products
-                </s-table-header>
-                <s-table-header listSlot="labeled">Discount</s-table-header>
-                <s-table-header format="numeric" listSlot="labeled">
-                  Inventory
-                </s-table-header>
-                <s-table-header listSlot="inline">Actions</s-table-header>
+                <s-table-header>Bundle Name</s-table-header>
+                <s-table-header>Status</s-table-header>
+                <s-table-header format="numeric">Products</s-table-header>
+                <s-table-header>Discount</s-table-header>
+                <s-table-header format="numeric">Inventory</s-table-header>
+                <s-table-header>Actions</s-table-header>
               </s-table-header-row>
               <s-table-body>
                 {paginatedBundles.map((bundle) => (
@@ -415,7 +422,7 @@ export default function Index() {
                       </div>
                     </s-table-cell>
                     <s-table-cell>
-                      <s-badge tone={bundle.active ? "success" : "info"}>
+                      <s-badge tone={bundle.active ? "success" : "warning"}>
                         {bundle.active ? "Active" : "Inactive"}
                       </s-badge>
                     </s-table-cell>
@@ -436,17 +443,17 @@ export default function Index() {
                       <div style={{ display: "flex", gap: "8px" }}>
                         <s-button
                           icon="edit"
+                          accessibilityLabel="edit"
                           variant="tertiary"
                           onClick={() => handleEdit(bundle.id)}
                         />
                         <s-button
                           icon="delete"
+                          accessibilityLabel="delete"
                           variant="tertiary"
                           tone="critical"
                           commandFor="delete-modal"
-                          onClick={() =>
-                            handleDeleteClick(bundle.id, bundle.name)
-                          }
+                          onClick={() => handleDelete(bundle.id, bundle.name)}
                         />
                       </div>
                     </s-table-cell>
