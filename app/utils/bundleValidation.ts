@@ -40,7 +40,11 @@ export const validators = {
   /**
    * Validate discount value
    */
-  discount: (discountType: DiscountType, discountValue: string): string[] => {
+  discount: (
+    discountType: DiscountType,
+    discountValue: string,
+    items: ProductItem[] = [],
+  ): string[] => {
     const errors: string[] = [];
 
     if (!discountValue || discountValue.trim() === "") {
@@ -59,12 +63,19 @@ export const validators = {
       errors.push("Discount value must be greater than 0");
     }
 
-    if (value < 0) {
-      errors.push("Discount value cannot be negative");
-    }
-
     if (discountType === "percentage" && value > 100) {
       errors.push("Percentage discount cannot exceed 100%");
+    }
+
+    if (discountType === "fixed") {
+      const total = items.reduce((sum, it) => sum + (it.price || 0), 0);
+      if (value > total) {
+        errors.push(
+          `Fixed discount cannot exceed total product value ($${total.toFixed(
+            2,
+          )})`,
+        );
+      }
     }
 
     return errors;
@@ -80,24 +91,26 @@ export const validators = {
       errors.push("Start date is required");
     }
 
-    if (!endDate) {
-      errors.push("End date is required");
-    }
-
-    if (startDate && endDate) {
+    // Validate start date format
+    if (startDate) {
       const start = new Date(startDate);
-      const end = new Date(endDate);
-
       if (isNaN(start.getTime())) {
         errors.push("Start date is invalid");
       }
+    }
 
+    // End date is optional. If provided, validate format and ordering.
+    if (endDate) {
+      const end = new Date(endDate);
       if (isNaN(end.getTime())) {
         errors.push("End date is invalid");
       }
 
-      if (start > end) {
-        errors.push("End date must be after start date");
+      if (startDate) {
+        const start = new Date(startDate);
+        if (!isNaN(start.getTime()) && start > end) {
+          errors.push("End date must be after start date");
+        }
       }
     }
 
@@ -121,7 +134,7 @@ export function validateBundleForm(
   // Validate each field
   errors.push(...validators.name(name));
   errors.push(...validators.items(items));
-  errors.push(...validators.discount(discountType, discountValue));
+  errors.push(...validators.discount(discountType, discountValue, items));
   errors.push(...validators.dateRange(startDate, endDate));
 
   return errors;
@@ -167,7 +180,7 @@ export function validateField(
     case "items":
       return validators.items(args[0]);
     case "discount":
-      return validators.discount(args[0], args[1]);
+      return validators.discount(args[0], args[1], args[2]);
     case "dateRange":
       return validators.dateRange(args[0], args[1]);
     default:

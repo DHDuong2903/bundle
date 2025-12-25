@@ -15,6 +15,10 @@ import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "../shopify.server";
 import db from "../db.server";
 import type { BundleListData } from "../types";
+import {
+  deleteBundleProduct,
+  createOrUpdateBundleProduct,
+} from "../utils/bundleMetafields";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { admin, session } = await authenticate.admin(request);
@@ -98,6 +102,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       id: bundle.id,
       name: bundle.name,
       description: bundle.description,
+      image: bundle.imageUrl || null,
       discountType: bundle.discountType,
       discountValue: bundle.discountValue,
       active: bundle.active,
@@ -111,13 +116,80 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
-  const { session } = await authenticate.admin(request);
+  const { admin, session } = await authenticate.admin(request);
   const formData = await request.formData();
   const action = formData.get("action");
   const bundleId = formData.get("bundleId") as string;
 
+  if (action === "resync-all") {
+    try {
+      const bundles = await db.bundle.findMany({
+        where: { shopDomain: session.shop },
+        include: { items: true },
+      });
+
+      let successCount = 0;
+      let errorCount = 0;
+
+      for (const bundle of bundles) {
+        if (bundle.bundleProductGid) {
+          const result = await createOrUpdateBundleProduct(admin, {
+            bundleId: bundle.id,
+            name: bundle.name,
+            description: bundle.description || "",
+            imageUrl: bundle.imageUrl,
+            items: bundle.items.map((item) => ({
+              id: item.id,
+              productId: item.productId,
+              variantId: item.variantId || "",
+              title: item.productTitle || "Unknown Product",
+              sku: "",
+              variant: item.variantTitle || "Default",
+              price: item.price || 0,
+              image: item.imageUrl || undefined,
+            })),
+            discountType: bundle.discountType,
+            discountValue: bundle.discountValue,
+            active: bundle.active,
+            startDate: bundle.startDate?.toISOString() || null,
+            endDate: bundle.endDate?.toISOString() || null,
+            existingProductGid: bundle.bundleProductGid,
+          });
+
+          if (result.success) {
+            successCount++;
+          } else {
+            errorCount++;
+          }
+        }
+      }
+
+      return {
+        success: true,
+        message: `Re-synced ${successCount} bundles successfully${errorCount > 0 ? `, ${errorCount} failed` : ""}`,
+      };
+    } catch (error) {
+      console.error("Error re-syncing bundles:", error);
+      return { error: "Failed to re-sync bundles" };
+    }
+  }
+
   if (action === "delete" && bundleId) {
     try {
+      // Get bundle to find product GID
+      const bundle = await db.bundle.findUnique({
+        where: {
+          id: bundleId,
+          shopDomain: session.shop,
+        },
+      });
+
+      // Delete Shopify product if it exists
+      if (bundle?.bundleProductGid) {
+        await deleteBundleProduct(admin, bundle.bundleProductGid);
+      }
+
+      // Delete bundle from database
       await db.bundle.delete({
         where: {
           id: bundleId,
@@ -136,14 +208,18 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
 export default function Index() {
   const { bundles } = useLoaderData<typeof loader>();
-  const actionData = useActionData<{ success?: boolean; error?: string }>();
+  const actionData = useActionData<{
+    success?: boolean;
+    error?: string;
+    message?: string;
+  }>();
   const navigate = useNavigate();
   const submit = useSubmit();
   const shopify = useAppBridge();
   const [searchTerm, setSearchTerm] = useState("");
-  const [statusFilter, setStatusFilter] = useState<
-    "all" | "active" | "inactive"
-  >("all");
+  const [statusFilter, setStatusFilter] = useState<"all" | "active" | "draft">(
+    "all",
+  );
   const [discountTypeFilter, setDiscountTypeFilter] = useState<
     "all" | "percentage" | "fixed"
   >("all");
@@ -158,7 +234,7 @@ export default function Index() {
   // Show toast on delete success or error
   useEffect(() => {
     if (actionData?.success) {
-      shopify.toast.show("Bundle deleted successfully");
+      shopify.toast.show(actionData.message || "Bundle deleted successfully");
     } else if (actionData?.error) {
       shopify.toast.show(actionData.error, { isError: true });
     }
@@ -192,7 +268,7 @@ export default function Index() {
     const matchesStatus =
       statusFilter === "all" ||
       (statusFilter === "active" && bundle.active) ||
-      (statusFilter === "inactive" && !bundle.active);
+      (statusFilter === "draft" && !bundle.active);
 
     const matchesDiscountType =
       discountTypeFilter === "all" ||
@@ -274,6 +350,16 @@ export default function Index() {
           >
             Create bundle
           </s-button>
+          <s-button
+            variant="secondary"
+            onClick={() => {
+              const formData = new FormData();
+              formData.append("action", "resync-all");
+              submit(formData, { method: "post" });
+            }}
+          >
+            Re-sync All Bundles
+          </s-button>
           <s-paragraph>
             Manage your active discounts and grouped products. Create offers
             that increase your average order value.
@@ -334,7 +420,7 @@ export default function Index() {
                     ? "All"
                     : statusFilter === "active"
                       ? "Active"
-                      : "Inactive"}
+                      : "draft"}
                 </s-button>
                 <s-menu
                   id="status-filter-menu"
@@ -346,8 +432,8 @@ export default function Index() {
                   <s-button onClick={() => setStatusFilter("active")}>
                     Active
                   </s-button>
-                  <s-button onClick={() => setStatusFilter("inactive")}>
-                    Inactive
+                  <s-button onClick={() => setStatusFilter("draft")}>
+                    Draft
                   </s-button>
                 </s-menu>
 
@@ -397,22 +483,30 @@ export default function Index() {
                           gap: "12px",
                         }}
                       >
-                        <div
-                          style={{
-                            width: "40px",
-                            height: "40px",
-                            borderRadius: "8px",
-                            backgroundColor: bundle.active
-                              ? "#d1f7e5"
-                              : "#e5e7eb",
-                            display: "flex",
-                            alignItems: "center",
-                            justifyContent: "center",
-                            fontSize: "20px",
-                          }}
-                        >
-                          📦
-                        </div>
+                        {bundle.image ? (
+                          <s-thumbnail
+                            src={bundle.image}
+                            alt={bundle.name}
+                            size="small"
+                          />
+                        ) : (
+                          <div
+                            style={{
+                              width: "40px",
+                              height: "40px",
+                              borderRadius: "8px",
+                              backgroundColor: bundle.active
+                                ? "#d1f7e5"
+                                : "#e5e7eb",
+                              display: "flex",
+                              alignItems: "center",
+                              justifyContent: "center",
+                              fontSize: "20px",
+                            }}
+                          >
+                            📦
+                          </div>
+                        )}
                         <div>
                           <s-heading>{bundle.name}</s-heading>
                           <s-text tone="neutral">
@@ -423,7 +517,7 @@ export default function Index() {
                     </s-table-cell>
                     <s-table-cell>
                       <s-badge tone={bundle.active ? "success" : "warning"}>
-                        {bundle.active ? "Active" : "Inactive"}
+                        {bundle.active ? "Active" : "Draft"}
                       </s-badge>
                     </s-table-cell>
                     <s-table-cell>

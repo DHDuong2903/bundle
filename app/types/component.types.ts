@@ -8,6 +8,7 @@ export interface BundleFormProps {
   initialData?: {
     name: string;
     description: string;
+    image?: string;
     discountType: DiscountType;
     discountValue: string;
     active: boolean;
@@ -18,6 +19,8 @@ export interface BundleFormProps {
   onSubmit: (data: {
     name: string;
     description: string;
+    image?: string;
+    imageFile?: File | null;
     discountType: DiscountType;
     discountValue: string;
     active: boolean;

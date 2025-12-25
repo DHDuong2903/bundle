@@ -28,7 +28,7 @@ CREATE TABLE "Campaign" (
     "bundleId" TEXT NOT NULL,
     "startDate" DATETIME NOT NULL,
     "endDate" DATETIME NOT NULL,
-    "status" TEXT NOT NULL DEFAULT 'inactive',
+    "status" TEXT NOT NULL DEFAULT 'draft',
     "shopDomain" TEXT NOT NULL,
     "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" DATETIME NOT NULL,

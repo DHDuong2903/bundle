@@ -6,12 +6,16 @@ import type {
 } from "react-router";
 import { redirect, useLoaderData, useNavigate } from "react-router";
 import { useState, useRef, useEffect, useCallback } from "react";
+import fs from "fs";
+import path from "path";
+import { randomUUID } from "crypto";
 import { useAppBridge } from "@shopify/app-bridge-react";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "../shopify.server";
 import db from "../db.server";
 import { BundleForm } from "../components/bundles/BundleForm";
 import type { ProductItem, DiscountType, BundleEditLoaderData } from "../types";
+import { createOrUpdateBundleProduct } from "../utils/bundleMetafields";
 
 export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   const { admin, session } = await authenticate.admin(request);
@@ -100,6 +104,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
       id: bundle.id,
       name: bundle.name,
       description: bundle.description,
+      image: bundle.imageUrl || null,
       discountType: bundle.discountType,
       discountValue: bundle.discountValue,
       active: bundle.active,
@@ -111,7 +116,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
 };
 
 export const action = async ({ request, params }: ActionFunctionArgs) => {
-  const { session } = await authenticate.admin(request);
+  const { admin, session } = await authenticate.admin(request);
   const { bundleId } = params;
   const formData = await request.formData();
 
@@ -123,6 +128,39 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
   const startDate = formData.get("startDate") as string;
   const endDate = formData.get("endDate") as string;
   const itemsJson = formData.get("items") as string;
+  const imageEntry = formData.get("image");
+  let image = "";
+
+  if (imageEntry && typeof imageEntry !== "string") {
+    try {
+      const file = imageEntry as File;
+      console.log("[Bundle Edit] File details:", {
+        name: file.name,
+        size: file.size,
+        type: file.type,
+      });
+
+      const arrayBuffer = await file.arrayBuffer();
+      const buffer = Buffer.from(arrayBuffer);
+      const uploadsDir = path.join(process.cwd(), "public", "uploads");
+      await fs.promises.mkdir(uploadsDir, { recursive: true });
+      const filename = `${randomUUID()}-${file.name}`;
+      const filePath = path.join(uploadsDir, filename);
+      await fs.promises.writeFile(filePath, buffer);
+
+      // Get the cloudflare tunnel URL from request
+      const host = request.headers.get("host") || "localhost:3000";
+      const protocol = request.headers.get("x-forwarded-proto") || "http";
+      image = `${protocol}://${host}/uploads/${filename}`;
+
+      console.log("[Bundle Edit] ✅ File saved, public URL:", image);
+    } catch (err) {
+      console.error("[Bundle Edit] ❌ Failed to process image:", err);
+      image = "";
+    }
+  } else {
+    image = (imageEntry as string) || "";
+  }
 
   if (!bundleId || !name || !itemsJson) {
     return { error: "Bundle ID, name and products are required" };
@@ -136,7 +174,7 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
 
   try {
     // Delete existing items and create new ones
-    await db.bundle.update({
+    const bundle = await db.bundle.update({
       where: {
         id: bundleId,
         shopDomain: session.shop,
@@ -144,6 +182,7 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
       data: {
         name,
         description: description || null,
+        imageUrl: image || null,
         discountType: discountType || null,
         discountValue: discountValue ? parseFloat(discountValue) : null,
         active,
@@ -153,11 +192,39 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
           deleteMany: {},
           create: items.map((item) => ({
             productId: item.productId,
+            variantId: item.variantId || null,
             quantity: 1,
+            productTitle: item.title || null,
+            variantTitle: item.variant || null,
+            price: typeof item.price === "number" ? item.price : null,
+            imageUrl: item.image || null,
           })),
         },
       },
     });
+
+    // Sync with Shopify product
+    const result = await createOrUpdateBundleProduct(admin, {
+      bundleId: bundle.id,
+      name,
+      description: description || "",
+      imageUrl: image || bundle.imageUrl,
+      items,
+      discountType: discountType || null,
+      discountValue: discountValue ? parseFloat(discountValue) : null,
+      active,
+      startDate: startDate || null,
+      endDate: endDate || null,
+      existingProductGid: bundle.bundleProductGid,
+    });
+
+    if (result.success && result.productGid && !bundle.bundleProductGid) {
+      // Update bundle with product GID if it didn't exist
+      await db.bundle.update({
+        where: { id: bundle.id },
+        data: { bundleProductGid: result.productGid },
+      });
+    }
 
     return redirect("/app");
   } catch (error) {
@@ -220,6 +287,8 @@ export default function EditBundle() {
       startDate: string;
       endDate: string;
       items: ProductItem[];
+      image?: string;
+      imageFile?: File | null;
     }) => {
       const formData = new FormData();
       formData.append("name", data.name);
@@ -229,6 +298,14 @@ export default function EditBundle() {
       formData.append("active", data.active.toString());
       formData.append("startDate", data.startDate);
       formData.append("endDate", data.endDate);
+      if (
+        data.imageFile &&
+        typeof (data.imageFile as any).arrayBuffer === "function"
+      ) {
+        formData.append("image", data.imageFile as File);
+      } else {
+        formData.append("image", data.image || "");
+      }
       formData.append("items", JSON.stringify(data.items));
 
       setIsSubmitting(true);

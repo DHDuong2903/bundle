@@ -37,15 +37,22 @@ model Bundle {
   id                  String        @id @default(cuid())
   name                String
   description         String?
+  imageUrl            String?
   discountType        String?       // percentage, fixed
-  discountValue       Float?
-  shopDomain          String
+  discountValue       Float?        // 20%, 200USD
   active              Boolean       @default(false)
   startDate           DateTime?
   endDate             DateTime?
+  shopDomain          String
+  
+  originalTotalPrice  Float?        // Tong gia truoc khi discount
+  bundlePrice         Float?        // Gia sau khi discount
+
+  items               BundleItem[]
+  bundleProductGid    String?       // Bundle nhưng được Shopify hiểu là 1 Product
+
   createdAt           DateTime      @default(now())
   updatedAt           DateTime      @updatedAt
-  items               BundleItem[]
 
   @@index([shopDomain])
   @@index([active])
@@ -55,8 +62,17 @@ model BundleItem {
   id              String   @id @default(cuid())
   bundleId        String
   bundle          Bundle   @relation(fields: [bundleId], references: [id], onDelete: Cascade)
+  
   productId       String   // Shopify product ID
+  variantId       String?  // optional Shopify variant ID (storefront numeric or gid as needed)
   quantity        Int      @default(1)
+
+  productTitle    String?
+  variantTitle    String?
+  price           Float?
+  imageUrl        String?
+  available       Boolean?
+
   createdAt       DateTime @default(now())
 
   @@index([bundleId])

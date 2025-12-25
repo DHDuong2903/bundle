@@ -19,7 +19,9 @@ export default function App() {
     <AppProvider embedded apiKey={apiKey}>
       <s-app-nav>
         <s-link href="/app">Home</s-link>
-        <s-link href="/app/test-scopes">Test Scopes</s-link>
+        <s-link href="/app/bundles/sync-status">Sync Status</s-link>
+        <s-link href="/app/bundles/setup-metafields">Setup Storefront</s-link>
+        <s-link href="/app/bundles/debug-metafield">Debug Metafield</s-link>
       </s-app-nav>
       <Outlet />
     </AppProvider>

@@ -6,12 +6,16 @@ import type {
 } from "react-router";
 import { redirect, useNavigate } from "react-router";
 import { useState, useRef, useEffect, useCallback } from "react";
+import fs from "fs";
+import path from "path";
+import { randomUUID } from "crypto";
 import { useAppBridge } from "@shopify/app-bridge-react";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "../shopify.server";
 import db from "../db.server";
 import { BundleForm } from "../components/bundles/BundleForm";
 import type { ProductItem } from "../types";
+import { createOrUpdateBundleProduct } from "../utils/bundleMetafields";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   await authenticate.admin(request);
@@ -19,7 +23,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
-  const { session } = await authenticate.admin(request);
+  const { admin, session } = await authenticate.admin(request);
   const formData = await request.formData();
 
   const name = formData.get("name") as string;
@@ -30,6 +34,47 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const startDate = formData.get("startDate") as string;
   const endDate = formData.get("endDate") as string;
   const itemsJson = formData.get("items") as string;
+  const imageEntry = formData.get("image");
+  let image = "";
+
+  console.log("[Bundle Create] Image entry received:", {
+    hasImageEntry: !!imageEntry,
+    isFile: imageEntry && typeof imageEntry !== "string",
+    type: typeof imageEntry,
+  });
+
+  if (imageEntry && typeof imageEntry !== "string") {
+    // Received a File - save locally and get public URL
+    try {
+      const file = imageEntry as File;
+      console.log("[Bundle Create] File details:", {
+        name: file.name,
+        size: file.size,
+        type: file.type,
+      });
+
+      const arrayBuffer = await file.arrayBuffer();
+      const buffer = Buffer.from(arrayBuffer);
+      const uploadsDir = path.join(process.cwd(), "public", "uploads");
+      await fs.promises.mkdir(uploadsDir, { recursive: true });
+      const filename = `${randomUUID()}-${file.name}`;
+      const filePath = path.join(uploadsDir, filename);
+      await fs.promises.writeFile(filePath, buffer);
+
+      // Get the cloudflare tunnel URL from request
+      const host = request.headers.get("host") || "localhost:3000";
+      const protocol = request.headers.get("x-forwarded-proto") || "http";
+      image = `${protocol}://${host}/uploads/${filename}`;
+
+      console.log("[Bundle Create] ✅ File saved, public URL:", image);
+    } catch (err) {
+      console.error("[Bundle Create] ❌ Failed to save image:", err);
+      image = "";
+    }
+  } else {
+    image = (imageEntry as string) || "";
+    console.log("[Bundle Create] Using existing image URL:", image);
+  }
 
   if (!name || !itemsJson) {
     return { error: "Bundle name and products are required" };
@@ -42,10 +87,14 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   }
 
   try {
-    await db.bundle.create({
+    // Create bundle in database first
+    console.log("[Bundle Create] Creating bundle with imageUrl:", image);
+
+    const bundle = await db.bundle.create({
       data: {
         name,
         description: description || null,
+        imageUrl: image || null,
         discountType: discountType || null,
         discountValue: discountValue ? parseFloat(discountValue) : null,
         shopDomain: session.shop,
@@ -55,11 +104,115 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         items: {
           create: items.map((item) => ({
             productId: item.productId,
+            variantId: item.variantId || null,
             quantity: 1,
+            productTitle: item.title || null,
+            variantTitle: item.variant || null,
+            price: typeof item.price === "number" ? item.price : null,
+            imageUrl: item.image || null,
           })),
         },
       },
     });
+
+    console.log("[Bundle Create] ✅ Bundle saved to database:", {
+      id: bundle.id,
+      name: bundle.name,
+      imageUrl: bundle.imageUrl,
+    });
+
+    console.log(
+      `[Bundle Create] Created bundle ${bundle.id}, now syncing to Shopify...`,
+    );
+
+    // Create Shopify product with bundle data in metafields
+    const result = await createOrUpdateBundleProduct(admin, {
+      bundleId: bundle.id,
+      name,
+      description: description || "",
+      imageUrl: image || null,
+      items,
+      discountType: discountType || null,
+      discountValue: discountValue ? parseFloat(discountValue) : null,
+      active,
+      startDate: startDate || null,
+      endDate: endDate || null,
+    });
+
+    console.log("[Bundle Create] Sync result:", result);
+
+    if (result.success && result.productGid) {
+      // Upload image to Product if we have imageUrl
+      if (image) {
+        try {
+          console.log("[Bundle Create] Uploading image to Product...");
+          const mediaResponse = await admin.graphql(
+            `#graphql
+            mutation productCreateMedia($productId: ID!, $media: [CreateMediaInput!]!) {
+              productCreateMedia(productId: $productId, media: $media) {
+                media {
+                  id
+                  ... on MediaImage {
+                    image {
+                      url
+                    }
+                  }
+                }
+                mediaUserErrors {
+                  field
+                  message
+                }
+              }
+            }`,
+            {
+              variables: {
+                productId: result.productGid,
+                media: [
+                  {
+                    originalSource: image,
+                    mediaContentType: "IMAGE",
+                  },
+                ],
+              },
+            },
+          );
+
+          const mediaData = await mediaResponse.json();
+          if (mediaData.data?.productCreateMedia?.mediaUserErrors?.length > 0) {
+            console.error(
+              "[Bundle Create] ❌ Failed to upload product image:",
+              mediaData.data.productCreateMedia.mediaUserErrors[0].message,
+            );
+          } else {
+            console.log("[Bundle Create] ✅ Product image uploaded");
+          }
+        } catch (error) {
+          console.error(
+            "[Bundle Create] ❌ Error uploading product image:",
+            error,
+          );
+        }
+      }
+
+      // Update bundle with Shopify product GID
+      console.log(
+        "[Bundle Create] Updating DB with productGid:",
+        result.productGid,
+      );
+      const updated = await db.bundle.update({
+        where: { id: bundle.id },
+        data: { bundleProductGid: result.productGid },
+      });
+      console.log("[Bundle Create] ✅ DB updated:", {
+        id: updated.id,
+        bundleProductGid: updated.bundleProductGid,
+      });
+    } else {
+      console.error(
+        "[Bundle Create] ❌ Failed to create Shopify product:",
+        result.error,
+      );
+    }
 
     return redirect("/app");
   } catch (error) {
@@ -115,16 +268,26 @@ export default function NewBundle() {
     async (data: {
       name: string;
       description: string;
-      discountType: "percentage" | "fixed" | "setPrice";
+      discountType: "percentage" | "fixed";
       discountValue: string;
       active: boolean;
       startDate: string;
       endDate: string;
       items: ProductItem[];
+      image?: string;
+      imageFile?: File | null;
     }) => {
       const formData = new FormData();
       formData.append("name", data.name);
       formData.append("description", data.description);
+      if (
+        data.imageFile &&
+        typeof (data.imageFile as any).arrayBuffer === "function"
+      ) {
+        formData.append("image", data.imageFile as File);
+      } else {
+        formData.append("image", data.image || "");
+      }
       formData.append("discountType", data.discountType);
       formData.append("discountValue", data.discountValue);
       formData.append("active", data.active.toString());
@@ -177,10 +340,7 @@ export default function NewBundle() {
         Discard
       </s-button>
 
-      <BundleForm
-        onSubmit={handleSubmit}
-        onSubmitRef={submitRef}
-      />
+      <BundleForm onSubmit={handleSubmit} onSubmitRef={submitRef} />
     </s-page>
   );
 }

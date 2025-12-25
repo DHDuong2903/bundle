@@ -1,5 +1,5 @@
 /* eslint-disable jsx-a11y/label-has-associated-control */
-import { useEffect, useState, useCallback, useMemo } from "react";
+import { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import { useAppBridge } from "@shopify/app-bridge-react";
 import type {
   ProductItem,
@@ -26,6 +26,8 @@ export function BundleForm({
   const [description, setDescription] = useState(
     initialData?.description || "",
   );
+  const [image, setImage] = useState(initialData?.image || "");
+  const [imageFile, setImageFile] = useState<File | null>(null);
   const [discountType, setDiscountType] = useState<DiscountType>(
     initialData?.discountType || "percentage",
   );
@@ -79,6 +81,8 @@ export function BundleForm({
       await onSubmit({
         name,
         description,
+        image,
+        imageFile,
         discountType,
         discountValue,
         active,
@@ -99,6 +103,8 @@ export function BundleForm({
     description,
     active,
     onSubmit,
+    imageFile,
+    image,
   ]);
 
   // Set default startDate on client-side only
@@ -106,14 +112,28 @@ export function BundleForm({
     if (!initialData?.startDate && !startDate) {
       setStartDate(new Date().toISOString().split("T")[0]);
     }
-  }, []);
-
+  }, [initialData?.startDate, startDate]);
   // Expose submit function to parent
   useEffect(() => {
     if (onSubmitRef) {
       onSubmitRef.current = handleSubmitForm;
     }
   }, [handleSubmitForm, onSubmitRef]);
+
+  // Track created object URL so we can revoke it when replaced/unmount
+  const prevImageUrlRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    return () => {
+      try {
+        if (prevImageUrlRef.current) {
+          URL.revokeObjectURL(prevImageUrlRef.current);
+        }
+      } catch (err) {
+        // ignore
+      }
+    };
+  }, []);
 
   const handleRemoveProduct = useCallback((id: string) => {
     setItems((prevItems) => prevItems.filter((item) => item.id !== id));
@@ -176,6 +196,8 @@ export function BundleForm({
         await onSubmit({
           name,
           description,
+          image,
+          imageFile,
           discountType,
           discountValue,
           active,
@@ -198,6 +220,8 @@ export function BundleForm({
       description,
       active,
       onSubmit,
+      image,
+      imageFile,
     ],
   );
 
@@ -230,7 +254,7 @@ export function BundleForm({
         <s-section>
           <s-stack gap="base">
             <s-heading>Bundle details</s-heading>
-
+            {/* Name */}
             <s-text-field
               label="Bundle Name"
               required
@@ -247,7 +271,7 @@ export function BundleForm({
               placeholder="e.g., Summer Essentials Pack"
               error={nameError}
             />
-
+            {/* Description */}
             <s-text-area
               label="Description"
               value={description}
@@ -257,104 +281,61 @@ export function BundleForm({
               placeholder="Describe the contents and value of this bundle..."
               rows={4}
             />
-          </s-stack>
-        </s-section>
+            {/* Image Upload */}
+            <div>
+              <s-drop-zone
+                label="Upload bundle image"
+                accessibilityLabel="Upload bundle image of type jpg, png, or gif"
+                accept=".jpg,.jpeg,.png,.gif"
+                onInput={(event: unknown) => {
+                  const ev = event as Event & {
+                    target?: { files?: FileList };
+                    currentTarget?: { files?: FileList };
+                  };
+                  const files: FileList | null =
+                    (ev.target && ev.target.files) ||
+                    (ev.currentTarget && ev.currentTarget.files) ||
+                    null;
 
-        {/* Products in Bundle */}
-        <s-section>
-          <s-stack gap="base">
-            <div
-              style={{
-                display: "flex",
-                justifyContent: "space-between",
-                alignItems: "center",
-              }}
-            >
-              <s-heading>Products in bundle</s-heading>
-              <s-button type="button" onClick={handleBrowseProducts}>
-                Browse products
-              </s-button>
-            </div>
-
-            {items.length > 0 ? (
-              <div
-                style={{
-                  display: "flex",
-                  flexDirection: "column",
-                  gap: "12px",
+                  if (files && files.length > 0) {
+                    const file = files[0];
+                    try {
+                      const url = URL.createObjectURL(file);
+                      // revoke previous object URL if we created one
+                      try {
+                        if (prevImageUrlRef.current) {
+                          URL.revokeObjectURL(prevImageUrlRef.current);
+                        }
+                      } catch (err) {
+                        // ignore
+                      }
+                      prevImageUrlRef.current = url;
+                      setImage(url);
+                      setImageFile(file);
+                    } catch (err) {
+                      console.error("Failed to create object URL:", err);
+                    }
+                  }
                 }}
-              >
-                {items.map((item) => (
-                  <div
-                    key={item.id}
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      gap: "16px",
-                      padding: "12px 16px",
-                      border: "1px solid #d1d5db",
-                      borderRadius: "8px",
-                      backgroundColor: "#ffffff",
-                    }}
-                  >
-                    <div
-                      style={{
-                        width: "48px",
-                        height: "48px",
-                        backgroundColor: "#f3f4f6",
-                        borderRadius: "6px",
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "center",
-                        overflow: "hidden",
-                        flexShrink: 0,
-                      }}
-                    >
-                      {item.image ? (
-                        <img
-                          src={item.image}
-                          alt={item.title}
-                          style={{
-                            width: "100%",
-                            height: "100%",
-                            objectFit: "cover",
-                          }}
-                        />
-                      ) : (
-                        <s-icon type="image" />
-                      )}
-                    </div>
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <s-text>{item.title}</s-text>
-                    </div>
-                    <div style={{ minWidth: "100px", textAlign: "right" }}>
-                      <s-text>${item.price.toFixed(2)}</s-text>
-                    </div>
-                    <s-button
-                      type="button"
-                      variant="tertiary"
-                      tone="critical"
-                      icon="delete"
-                      onClick={() => handleRemoveProduct(item.id)}
-                    />
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <div
-                style={{
-                  padding: "40px",
-                  textAlign: "center",
-                  border: "1px dashed var(--s-color-border)",
-                  borderRadius: "var(--s-border-radius-base)",
-                  backgroundColor: "var(--s-color-bg-surface-secondary)",
+                onDropRejected={(event: unknown) => {
+                  console.warn("Drop rejected", event);
                 }}
               >
                 <s-text tone="neutral">
-                  No products added yet. Search or browse to add products.
+                  Drag and drop an image here, or click to browse.
                 </s-text>
-              </div>
-            )}
+              </s-drop-zone>
+
+              {image ? (
+                <div style={{ marginTop: "8px" }}>
+                  <s-thumbnail
+                    alt={description || name || "Bundle image"}
+                    src={image}
+                    size="small"
+                  />
+                </div>
+              ) : null}
+            </div>
           </s-stack>
         </s-section>
 
@@ -412,6 +393,14 @@ export function BundleForm({
                     setDiscountError("Discount must be a positive number");
                   } else if (discountType === "percentage" && numValue > 100) {
                     setDiscountError("Percentage cannot exceed 100%");
+                  } else if (
+                    discountType === "fixed" &&
+                    !isNaN(numValue) &&
+                    numValue > total
+                  ) {
+                    setDiscountError(
+                      `Fixed discount cannot exceed total product value ($${total.toFixed(2)})`,
+                    );
                   } else {
                     setDiscountError("");
                   }
@@ -494,21 +483,129 @@ export function BundleForm({
           </s-section>
         </div>
 
+        {/* Products in Bundle */}
+        <s-section>
+          <s-stack gap="base">
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+              }}
+            >
+              <s-heading>Products in bundle</s-heading>
+              <s-button type="button" onClick={handleBrowseProducts}>
+                Browse products
+              </s-button>
+            </div>
+
+            {items.length > 0 ? (
+              <div
+                style={{
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: "12px",
+                  ...(items.length > 5
+                    ? {
+                        maxHeight: "420px",
+                        overflowY: "auto",
+                        paddingRight: "4px",
+                      }
+                    : {}),
+                }}
+              >
+                {items.map((item) => (
+                  <div
+                    key={item.id}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: "16px",
+                      padding: "12px 16px",
+                      border: "1px solid #d1d5db",
+                      borderRadius: "8px",
+                      backgroundColor: "#ffffff",
+                    }}
+                  >
+                    <div
+                      style={{
+                        width: "48px",
+                        height: "48px",
+                        backgroundColor: "#f3f4f6",
+                        borderRadius: "6px",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        overflow: "hidden",
+                        flexShrink: 0,
+                      }}
+                    >
+                      {item.image ? (
+                        <img
+                          src={item.image}
+                          alt={item.title}
+                          style={{
+                            width: "100%",
+                            height: "100%",
+                            objectFit: "cover",
+                          }}
+                        />
+                      ) : (
+                        <s-icon type="image" />
+                      )}
+                    </div>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <s-stack>
+                        <s-text>{item.title}</s-text>
+                        {item.variant ? (
+                          <s-text tone="neutral">{item.variant}</s-text>
+                        ) : null}
+                      </s-stack>
+                    </div>
+                    <div style={{ minWidth: "100px", textAlign: "right" }}>
+                      <s-text>${item.price.toFixed(2)}</s-text>
+                    </div>
+                    <s-button
+                      type="button"
+                      variant="tertiary"
+                      tone="critical"
+                      icon="delete"
+                      onClick={() => handleRemoveProduct(item.id)}
+                    />
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div
+                style={{
+                  padding: "40px",
+                  textAlign: "center",
+                  border: "1px dashed var(--s-color-border)",
+                  borderRadius: "var(--s-border-radius-base)",
+                  backgroundColor: "var(--s-color-bg-surface-secondary)",
+                }}
+              >
+                <s-text tone="neutral">
+                  No products added yet. Search or browse to add products.
+                </s-text>
+              </div>
+            )}
+          </s-stack>
+        </s-section>
+
         {/* Availability */}
         <s-section>
           <s-stack gap="base">
             <s-heading>Availability</s-heading>
 
-            <div>
+            <s-stack direction="inline" justifyContent="space-between">
               <s-stack gap="small">
                 <div>
                   <s-text type="strong">Status</s-text>
                 </div>
 
                 <s-stack direction="inline" gap="base">
-                  <s-text tone="neutral">
-                    {active ? "Active" : "Inactive"}
-                  </s-text>
+                  <s-text tone="neutral">{active ? "Active" : "Draft"}</s-text>
                   <s-switch
                     accessibilityLabel="Toggle bundle active status"
                     checked={active}
@@ -533,47 +630,49 @@ export function BundleForm({
 
                 {itemsError && <s-text tone="critical">{itemsError}</s-text>}
               </s-stack>
-            </div>
 
-            <s-stack direction="inline" gap="large">
-              <div>
-                <s-text type="strong">Start Date</s-text>
-                <s-date-picker
-                  value={startDate}
-                  onInput={(e) => {
-                    const value = (e.target as HTMLInputElement).value;
-                    setStartDate(value);
-                    if (!value) {
-                      setDateError("Start date is required");
-                    } else if (endDate && new Date(value) > new Date(endDate)) {
-                      setDateError("End date must be after start date");
-                    } else {
-                      setDateError("");
-                    }
-                  }}
-                />
-              </div>
+              <s-stack direction="inline" gap="large">
+                <s-stack gap="base">
+                  <s-text type="strong">Start Date</s-text>
+                  <s-date-picker
+                    value={startDate}
+                    onInput={(e) => {
+                      const value = (e.target as HTMLInputElement).value;
+                      setStartDate(value);
+                      if (!value) {
+                        setDateError("Start date is required");
+                      } else if (
+                        endDate &&
+                        new Date(value) > new Date(endDate)
+                      ) {
+                        setDateError("End date must be after start date");
+                      } else {
+                        setDateError("");
+                      }
+                    }}
+                  />
+                </s-stack>
 
-              <div>
-                <s-text type="strong">End Date</s-text>
-                <s-date-picker
-                  value={endDate}
-                  onInput={(e) => {
-                    const value = (e.target as HTMLInputElement).value;
-                    setEndDate(value);
-                    if (!value) {
-                      setDateError("End date is required");
-                    } else if (
-                      startDate &&
-                      new Date(startDate) > new Date(value)
-                    ) {
-                      setDateError("End date must be after start date");
-                    } else {
-                      setDateError("");
-                    }
-                  }}
-                />
-              </div>
+                <s-stack gap="base">
+                  <s-text type="strong">End Date</s-text>
+                  <s-date-picker
+                    value={endDate}
+                    onInput={(e) => {
+                      const value = (e.target as HTMLInputElement).value;
+                      setEndDate(value);
+                      if (
+                        value &&
+                        startDate &&
+                        new Date(startDate) > new Date(value)
+                      ) {
+                        setDateError("End date must be after start date");
+                      } else {
+                        setDateError("");
+                      }
+                    }}
+                  />
+                </s-stack>
+              </s-stack>
             </s-stack>
 
             {dateError && <s-text tone="critical">{dateError}</s-text>}

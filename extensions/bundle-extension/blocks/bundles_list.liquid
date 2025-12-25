@@ -1,0 +1,369 @@
+{% comment %}
+  Bundles List Block
+  Displays all active bundles from products with bundle_data metafield
+{% endcomment %}
+
+<div class="bundles-list-container" {{ block.shopify_attributes }}>
+  <div class="bundles-header">
+    <h2 class="bundles-title">{{ block.settings.heading | default: "Available Bundles" }}</h2>
+    {% if block.settings.description %}
+      <p class="bundles-description">{{ block.settings.description }}</p>
+    {% endif %}
+  </div>
+
+  <div class="bundles-grid">
+    {% assign found_bundles = false %}
+    
+    {% comment %} Loop through all products to find bundles {% endcomment %}
+    {% for product in collections.all.products %}
+      {% assign bundle_data = product.metafields.custom.bundle_data.value %}
+      
+      {% if bundle_data and bundle_data.active %}
+        {% assign found_bundles = true %}
+        
+        <div class="bundle-card">
+          {% if bundle_data.imageUrl %}
+            <div class="bundle-card-image">
+              <img src="{{ bundle_data.imageUrl }}" 
+                   alt="{{ bundle_data.name }}"
+                   width="400"
+                   height="267"
+                   loading="lazy">
+              {% if bundle_data.discountType and bundle_data.discountValue %}
+                <div class="bundle-discount-badge-overlay">
+                  {% if bundle_data.discountType == "percentage" %}
+                    -{{ bundle_data.discountValue }}%
+                  {% else %}
+                    -{{ bundle_data.discountValue | money }}
+                  {% endif %}
+                </div>
+              {% endif %}
+            </div>
+          {% endif %}
+
+          <div class="bundle-card-content">
+            <div class="bundle-card-header">
+              <h3 class="bundle-card-title">{{ bundle_data.name }}</h3>
+            </div>
+
+            {% if bundle_data.description %}
+              <p class="bundle-card-description">{{ bundle_data.description }}</p>
+            {% endif %}
+
+            <div class="bundle-card-pricing">
+              <!-- Debug: Original={{ bundle_data.originalPrice }}, Bundle={{ bundle_data.bundlePrice }} -->
+              {% assign original_price_cents = bundle_data.originalPrice | times: 100 %}
+              {% assign bundle_price_cents = bundle_data.bundlePrice | times: 100 %}
+              {% assign savings = original_price_cents | minus: bundle_price_cents %}
+              <!-- Debug: Cents={{ original_price_cents }}, {{ bundle_price_cents }} -->
+              
+              <div class="price-info">
+                <div class="price-row">
+                  <span class="bundle-price-original">{{ original_price_cents | money }}</span>
+                  <span class="bundle-price-final">{{ bundle_price_cents | money }}</span>
+                </div>
+                <div class="savings-badge">
+                  Save {{ savings | money }}
+                </div>
+              </div>
+            </div>
+
+            <div class="bundle-card-items">
+              <p class="bundle-items-count">{{ bundle_data.items.size }} items included</p>
+              <ul class="bundle-items-preview">
+              {% for item in bundle_data.items limit: 3 %}
+                {% assign item_product_id = item.productId | remove: "gid://shopify/Product/" %}
+                {% assign item_product = all_products[item_product_id] %}
+                {% if item_product %}
+                  <li>{{ item_product.title }}</li>
+                {% endif %}
+              {% endfor %}
+              {% if bundle_data.items.size > 3 %}
+                <li>+{{ bundle_data.items.size | minus: 3 }} more</li>
+              {% endif %}
+            </ul>
+            </div>
+
+            <div class="bundle-card-actions">
+              <button 
+                class="bundle-view-details"
+                data-product-id="{{ product.id }}"
+                data-product-handle="{{ product.handle }}"
+                onclick="window.location.href='/products/{{ product.handle }}'">
+                View Details
+              </button>
+              
+              <button 
+                class="bundle-add-to-cart"
+                data-product-id="{{ product.id }}"
+                data-variant-id="{{ product.variants.first.id }}"
+                data-bundle-id="{{ bundle_data.bundleId }}">
+                Add to Cart
+              </button>
+            </div>
+          </div>
+        </div>
+      {% endif %}
+    {% endfor %}
+
+    {% unless found_bundles %}
+      <div class="no-bundles-message">
+        <p>No bundles available at the moment.</p>
+      </div>
+    {% endunless %}
+  </div>
+</div>
+
+<style>
+  .bundles-list-container {
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 40px 20px;
+  }
+
+  .bundles-header {
+    text-align: center;
+    margin-bottom: 40px;
+  }
+
+  .bundles-title {
+    font-size: 2rem;
+    font-weight: bold;
+    margin-bottom: 12px;
+    color: #111827;
+  }
+
+  .bundles-description {
+    font-size: 1.125rem;
+    color: #6b7280;
+  }
+
+  .bundles-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+    gap: 24px;
+  }
+
+  .bundle-card {
+    background: white;
+    border: 1px solid #e5e7eb;
+    border-radius: 12px;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    transition: box-shadow 0.2s;
+  }
+
+  .bundle-card:hover {
+    box-shadow: 0 10px 25px rgba(0, 0, 0, 0.1);
+  }
+
+  .bundle-card-image {
+    position: relative;
+    width: 100%;
+    padding-top: 66.67%; /* 3:2 aspect ratio */
+    overflow: hidden;
+    background: #f9fafb;
+  }
+
+  .bundle-card-image img {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+  }
+
+  .bundle-discount-badge-overlay {
+    position: absolute;
+    top: 12px;
+    right: 12px;
+    background: #dc2626;
+    color: white;
+    padding: 6px 12px;
+    border-radius: 20px;
+    font-size: 0.875rem;
+    font-weight: 700;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+  }
+
+  .bundle-card-content {
+    padding: 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    flex: 1;
+  }
+
+  .bundle-card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 12px;
+  }
+
+  .bundle-card-title {
+    font-size: 1.25rem;
+    font-weight: 600;
+    color: #111827;
+  }
+
+  .bundle-card-description {
+    color: #6b7280;
+    font-size: 0.875rem;
+    line-height: 1.5;
+  }
+
+  .bundle-card-pricing {
+    padding: 16px;
+    background: #f9fafb;
+    border-radius: 8px;
+  }
+
+  .price-info {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .price-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .bundle-price-original {
+    font-size: 1rem;
+    color: #9ca3af;
+    text-decoration: line-through;
+  }
+
+  .bundle-price-final {
+    font-size: 1.5rem;
+    font-weight: bold;
+    color: #059669;
+  }
+
+  .savings-badge {
+    background: #fef3c7;
+    color: #92400e;
+    padding: 4px 12px;
+    border-radius: 6px;
+    font-size: 0.875rem;
+    font-weight: 700;
+    width: fit-content;
+  }
+
+  .bundle-card-items {
+    border-top: 1px solid #e5e7eb;
+    padding-top: 16px;
+  }
+
+  .bundle-items-count {
+    font-size: 0.875rem;
+    font-weight: 600;
+    color: #374151;
+    margin-bottom: 8px;
+  }
+
+  .bundle-items-preview {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    font-size: 0.875rem;
+    color: #6b7280;
+  }
+
+  .bundle-items-preview li {
+    padding: 4px 0;
+  }
+
+  .bundle-items-preview li:before {
+    content: "✓ ";
+    color: #059669;
+    font-weight: bold;
+    margin-right: 8px;
+  }
+
+  .bundle-card-actions {
+    display: flex;
+    gap: 12px;
+    margin-top: auto;
+  }
+
+  .bundle-view-details,
+  .bundle-add-to-cart {
+    flex: 1;
+    padding: 12px 20px;
+    border: none;
+    border-radius: 8px;
+    font-size: 0.875rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+
+  .bundle-view-details {
+    background: white;
+    color: #2563eb;
+    border: 2px solid #2563eb;
+  }
+
+  .bundle-view-details:hover {
+    background: #eff6ff;
+  }
+
+  .bundle-add-to-cart {
+    background: #2563eb;
+    color: white;
+  }
+
+  .bundle-add-to-cart:hover {
+    background: #1d4ed8;
+  }
+
+  .bundle-add-to-cart:disabled {
+    background: #9ca3af;
+    cursor: not-allowed;
+  }
+
+  .no-bundles-message {
+    grid-column: 1 / -1;
+    text-align: center;
+    padding: 60px 20px;
+    color: #6b7280;
+  }
+
+  @media (max-width: 768px) {
+    .bundles-grid {
+      grid-template-columns: 1fr;
+    }
+    
+    .bundle-card-actions {
+      flex-direction: column;
+    }
+  }
+</style>
+
+<script src="{{ 'bundle-display.js' | asset_url }}" defer></script>
+
+{% schema %}
+{
+  "name": "Bundles List",
+  "target": "section",
+  "settings": [
+    {
+      "type": "text",
+      "id": "heading",
+      "label": "Heading",
+      "default": "Available Bundles"
+    },
+    {
+      "type": "textarea",
+      "id": "description",
+      "label": "Description"
+    }
+  ]
+}
+{% endschema %}

@@ -14,6 +14,7 @@ export type DiscountType = "percentage" | "fixed";
 export interface BundleFormData {
   name: string;
   description: string;
+  image?: string;
   discountType: DiscountType;
   discountValue: string;
   active: boolean;
@@ -26,6 +27,7 @@ export interface BundleData {
   id: string;
   name: string;
   description: string | null;
+  image?: string | null;
   discountType: string | null;
   discountValue: number | null;
   active: boolean;
