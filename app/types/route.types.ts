@@ -22,10 +22,10 @@ export interface BundleListData {
   id: string;
   name: string;
   description: string | null;
+  image: string | null;
   discountType: string | null;
   discountValue: number | null;
   active: boolean;
   itemCount: number;
   price: number;
-  inventory: number;
 }

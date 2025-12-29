@@ -17,7 +17,6 @@ import db from "../db.server";
 import type { BundleListData } from "../types";
 import {
   deleteBundleProduct,
-  createOrUpdateBundleProduct,
 } from "../utils/bundleMetafields";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
@@ -37,7 +36,11 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
   const bundlesData: BundleListData[] = [];
   for (const bundle of bundles) {
-    const basePrice = bundle.items.length * 25; // Placeholder
+    // Calculate price from actual bundle items
+    const basePrice = bundle.items.reduce(
+      (sum, item) => sum + (item.price || 0),
+      0,
+    );
 
     // Calculate final price after discount
     let finalPrice = basePrice;
@@ -45,57 +48,10 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       if (bundle.discountType === "percentage") {
         finalPrice = basePrice - (basePrice * bundle.discountValue) / 100;
       } else if (bundle.discountType === "fixed") {
-        finalPrice = basePrice - bundle.discountValue;
+        // Fixed discount is PER ITEM
+        const totalFixedDiscount = bundle.discountValue * bundle.items.length;
+        finalPrice = basePrice - totalFixedDiscount;
       }
-    }
-
-    // Fetch inventory for bundle items from Shopify Admin API - parallel requests
-    let inventory = 0;
-    try {
-      const inventoryPromises = bundle.items.map(async (item) => {
-        try {
-          const response = await admin.graphql(
-            `#graphql
-            query getProduct($id: ID!) {
-              product(id: $id) {
-                variants(first: 10) {
-                  nodes {
-                    id
-                    inventoryQuantity
-                  }
-                }
-              }
-            }`,
-            { variables: { id: item.productId } },
-          );
-
-          const data = await response.json();
-          const product = data.data?.product;
-          if (
-            product &&
-            product.variants &&
-            product.variants.nodes.length > 0
-          ) {
-            const qty = product.variants.nodes[0].inventoryQuantity;
-            return typeof qty === "number" ? qty : 0;
-          }
-          return 0;
-        } catch (err) {
-          console.error(
-            `Error fetching inventory for product ${item.productId}:`,
-            err,
-          );
-          return 0;
-        }
-      });
-
-      const inventories = await Promise.all(inventoryPromises);
-      if (inventories.length > 0) {
-        inventory = Math.max(0, Math.min(...inventories));
-      }
-    } catch (err) {
-      console.error("Error fetching inventories for bundle:", err);
-      inventory = 0;
     }
 
     bundlesData.push({
@@ -108,7 +64,6 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       active: bundle.active,
       itemCount: bundle.items.length,
       price: Math.max(0, finalPrice),
-      inventory,
     });
   }
 
@@ -120,59 +75,6 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const formData = await request.formData();
   const action = formData.get("action");
   const bundleId = formData.get("bundleId") as string;
-
-  if (action === "resync-all") {
-    try {
-      const bundles = await db.bundle.findMany({
-        where: { shopDomain: session.shop },
-        include: { items: true },
-      });
-
-      let successCount = 0;
-      let errorCount = 0;
-
-      for (const bundle of bundles) {
-        if (bundle.bundleProductGid) {
-          const result = await createOrUpdateBundleProduct(admin, {
-            bundleId: bundle.id,
-            name: bundle.name,
-            description: bundle.description || "",
-            imageUrl: bundle.imageUrl,
-            items: bundle.items.map((item) => ({
-              id: item.id,
-              productId: item.productId,
-              variantId: item.variantId || "",
-              title: item.productTitle || "Unknown Product",
-              sku: "",
-              variant: item.variantTitle || "Default",
-              price: item.price || 0,
-              image: item.imageUrl || undefined,
-            })),
-            discountType: bundle.discountType,
-            discountValue: bundle.discountValue,
-            active: bundle.active,
-            startDate: bundle.startDate?.toISOString() || null,
-            endDate: bundle.endDate?.toISOString() || null,
-            existingProductGid: bundle.bundleProductGid,
-          });
-
-          if (result.success) {
-            successCount++;
-          } else {
-            errorCount++;
-          }
-        }
-      }
-
-      return {
-        success: true,
-        message: `Re-synced ${successCount} bundles successfully${errorCount > 0 ? `, ${errorCount} failed` : ""}`,
-      };
-    } catch (error) {
-      console.error("Error re-syncing bundles:", error);
-      return { error: "Failed to re-sync bundles" };
-    }
-  }
 
   if (action === "delete" && bundleId) {
     try {
@@ -350,16 +252,6 @@ export default function Index() {
           >
             Create bundle
           </s-button>
-          <s-button
-            variant="secondary"
-            onClick={() => {
-              const formData = new FormData();
-              formData.append("action", "resync-all");
-              submit(formData, { method: "post" });
-            }}
-          >
-            Re-sync All Bundles
-          </s-button>
           <s-paragraph>
             Manage your active discounts and grouped products. Create offers
             that increase your average order value.
@@ -468,8 +360,8 @@ export default function Index() {
                 <s-table-header>Bundle Name</s-table-header>
                 <s-table-header>Status</s-table-header>
                 <s-table-header format="numeric">Products</s-table-header>
+                <s-table-header format="numeric">Price</s-table-header>
                 <s-table-header>Discount</s-table-header>
-                <s-table-header format="numeric">Inventory</s-table-header>
                 <s-table-header>Actions</s-table-header>
               </s-table-header-row>
               <s-table-body>
@@ -524,14 +416,14 @@ export default function Index() {
                       <s-text>{bundle.itemCount} items</s-text>
                     </s-table-cell>
                     <s-table-cell>
+                      <s-text>${bundle.price.toFixed(2)}</s-text>
+                    </s-table-cell>
+                    <s-table-cell>
                       <s-text>
                         {bundle.discountType && bundle.discountValue
                           ? `${bundle.discountValue}${bundle.discountType === "percentage" ? "%" : " USD"}`
                           : "No discount"}
                       </s-text>
-                    </s-table-cell>
-                    <s-table-cell>
-                      <s-text>{bundle.inventory} available</s-text>
                     </s-table-cell>
                     <s-table-cell>
                       <div style={{ display: "flex", gap: "8px" }}>

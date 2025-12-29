@@ -75,16 +75,50 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
       const product = data.data?.product;
 
       if (product) {
-        const variant = product.variants.nodes[0];
+        // Try to find the originally selected variant by comparing IDs (gid or numeric)
+        const requestedVariantId = item.variantId;
+        const normalize = (id: string | undefined | null) => {
+          if (!id) return null;
+          const parts = String(id).split("/");
+          return parts[parts.length - 1];
+        };
+
+        const reqIdNorm = normalize(requestedVariantId);
+
+        let variant = null as any;
+        if (reqIdNorm) {
+          variant = product.variants.nodes.find((v: any) => {
+            const vNorm = normalize(v.id);
+            return v.id === requestedVariantId || vNorm === reqIdNorm;
+          });
+        }
+
+        // If not found, try to match by title as a last resort
+        if (!variant) {
+          variant =
+            product.variants.nodes.find(
+              (v: any) => v.title === item.variantTitle,
+            ) || product.variants.nodes[0];
+        }
+
+        // Use stored DB price if variant not found or variant price missing
+        const priceFromVariant =
+          variant && variant.price ? parseFloat(variant.price) : null;
+        const price = priceFromVariant ?? item.price ?? 0;
+
         return {
           id: `${product.id}-${index}`,
           productId: product.id,
-          variantId: variant.id,
+          variantId: variant?.id || item.variantId || "",
           title: product.title,
-          sku: variant.sku || "N/A",
-          variant: variant.title,
-          price: parseFloat(variant.price),
-          image: variant.image?.url || product.featuredImage?.url || undefined,
+          sku: variant?.sku || item.sku || "N/A",
+          variant: variant?.title || item.variantTitle || "",
+          price: price,
+          image:
+            variant?.image?.url ||
+            product.featuredImage?.url ||
+            item.image ||
+            undefined,
         } as ProductItem;
       }
       return null;
@@ -134,12 +168,6 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
   if (imageEntry && typeof imageEntry !== "string") {
     try {
       const file = imageEntry as File;
-      console.log("[Bundle Edit] File details:", {
-        name: file.name,
-        size: file.size,
-        type: file.type,
-      });
-
       const arrayBuffer = await file.arrayBuffer();
       const buffer = Buffer.from(arrayBuffer);
       const uploadsDir = path.join(process.cwd(), "public", "uploads");
@@ -152,8 +180,6 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
       const host = request.headers.get("host") || "localhost:3000";
       const protocol = request.headers.get("x-forwarded-proto") || "http";
       image = `${protocol}://${host}/uploads/${filename}`;
-
-      console.log("[Bundle Edit] ✅ File saved, public URL:", image);
     } catch (err) {
       console.error("[Bundle Edit] ❌ Failed to process image:", err);
       image = "";
@@ -243,16 +269,12 @@ export default function EditBundle() {
   const discardButtonRef = useRef<any>(null);
 
   const handleSave = useCallback(async () => {
-    console.log("Save button clicked");
     if (submitRef.current) {
       await submitRef.current();
-    } else {
-      console.error("submitRef.current is null");
     }
   }, []);
 
   const handleDiscard = useCallback(() => {
-    console.log("Discard button clicked");
     navigate("/app");
   }, [navigate]);
 
@@ -333,11 +355,6 @@ export default function EditBundle() {
     },
     [bundle.id, shopify, navigate],
   );
-
-  console.log("EditBundle component rendered", {
-    isSubmitting,
-    hasSubmitRef: !!submitRef.current,
-  });
 
   return (
     <s-page heading="Edit bundle" back-action="/app">

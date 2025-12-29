@@ -10,8 +10,7 @@ import type {
 } from "../../types";
 import {
   calculateTotal,
-  calculateDiscount,
-  calculateFinalPrice,
+  distributeDiscounts,
 } from "../../utils/bundlePricing";
 import { validateBundleForm } from "../../utils/bundleValidation";
 
@@ -45,16 +44,6 @@ export function BundleForm({
   const [dateError, setDateError] = useState("");
 
   const handleSubmitForm = useCallback(async () => {
-    console.log("=== VALIDATION START ===");
-    console.log("handleSubmitForm called", {
-      name,
-      items: items.length,
-      discountType,
-      discountValue,
-      startDate,
-      endDate,
-    });
-
     // Clear previous errors
     setNameError("");
     setDiscountError("");
@@ -149,21 +138,25 @@ export function BundleForm({
       const newItems = (selected as PickerProduct[]).map((product) => {
         const variant =
           (product.variants && product.variants[0]) || ({} as PickerVariant);
+        
+        // Try to get variant image first, then product image
+        const variantImage = (variant as any).image;
+        const productImage = product.images && product.images[0];
+        const imageSource = variantImage || productImage;
+        const imageUrl = imageSource
+          ? imageSource.originalSrc || imageSource.url || imageSource.src
+          : undefined;
+
         return {
           id: crypto.randomUUID(),
           productId: String(product.id),
           variantId: String(variant.id ?? ""),
           title: String(product.title ?? ""),
+          handle: String((product as any).handle ?? ""),
           sku: String(variant.sku ?? "N/A"),
           variant: String(variant.title ?? ""),
           price: parseFloat(String(variant.price ?? "0")) || 0,
-          image:
-            (product.images &&
-              product.images[0] &&
-              (product.images[0].originalSrc ||
-                product.images[0].url ||
-                product.images[0].src)) ||
-            undefined,
+          image: imageUrl,
         } as ProductItem;
       });
 
@@ -185,7 +178,6 @@ export function BundleForm({
       );
 
       if (errors.length > 0) {
-        console.log("Validation errors:", errors);
         setValidationErrors(errors);
         window.scrollTo({ top: 0, behavior: "smooth" });
         return;
@@ -205,7 +197,6 @@ export function BundleForm({
           endDate,
           items,
         });
-        console.log("onSubmit completed");
       } catch (error) {
         console.error("Error in onSubmit:", error);
       }
@@ -226,14 +217,12 @@ export function BundleForm({
   );
 
   const total = useMemo(() => calculateTotal(items), [items]);
-  const discount = useMemo(
-    () => calculateDiscount(items, discountType, discountValue),
+  const breakdown = useMemo(
+    () => distributeDiscounts(items, discountType, discountValue),
     [items, discountType, discountValue],
   );
-  const finalPrice = useMemo(
-    () => calculateFinalPrice(items, discountType, discountValue),
-    [items, discountType, discountValue],
-  );
+  const discount = breakdown.totalDiscount;
+  const finalPrice = breakdown.finalPrice;
 
   return (
     <form id="bundle-form" onSubmit={handleSubmit}>
@@ -451,12 +440,15 @@ export function BundleForm({
                         Bundle Discount (
                         {discountType === "percentage"
                           ? `${discountValue}%`
-                          : "$" + discountValue}
-                        )
+                          : "$" + discountValue}{" "}
+                        per item)
                       </span>
                       <span>-${discount.toFixed(2)}</span>
                     </div>
                   )}
+                  <div style={{ fontSize: "12px", color: "#6b7280", fontStyle: "italic", marginTop: "-4px" }}>
+                   * The discount value is applied to each product in the bundle individually.
+                  </div>
 
                   <div
                     style={{
@@ -557,13 +549,38 @@ export function BundleForm({
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <s-stack>
                         <s-text>{item.title}</s-text>
-                        {item.variant ? (
+                        {item.variant && item.variant !== "Default Title" ? (
                           <s-text tone="neutral">{item.variant}</s-text>
+                        ) : null}
+                        {item.sku && item.sku !== "N/A" ? (
+                           <s-text tone="neutral" size="small">SKU: {item.sku}</s-text>
                         ) : null}
                       </s-stack>
                     </div>
-                    <div style={{ minWidth: "100px", textAlign: "right" }}>
-                      <s-text>${item.price.toFixed(2)}</s-text>
+                    <div style={{ minWidth: "140px", textAlign: "right" }}>
+                      {(() => {
+                        const itemBreak = breakdown.items.find(
+                          (b) => b.id === item.id,
+                        );
+                        if (itemBreak) {
+                          return (
+                            <div>
+                              <s-text>${item.price.toFixed(2)}</s-text>
+                              {itemBreak.discountAmount > 0 && (
+                                <div
+                                  style={{ color: "#059669", fontSize: "13px" }}
+                                >
+                                  -${itemBreak.discountAmount.toFixed(2)}
+                                </div>
+                              )}
+                              <div style={{ fontWeight: 600 }}>
+                                ${itemBreak.finalPrice.toFixed(2)}
+                              </div>
+                            </div>
+                          );
+                        }
+                        return <s-text>${item.price.toFixed(2)}</s-text>;
+                      })()}
                     </div>
                     <s-button
                       type="button"

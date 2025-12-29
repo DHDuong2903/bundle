@@ -7,6 +7,7 @@ export interface ProductItem {
   variant: string;
   price: number;
   image?: string;
+  handle?: string;
 }
 
 export type DiscountType = "percentage" | "fixed";
@@ -33,5 +34,4 @@ export interface BundleData {
   active: boolean;
   itemCount: number;
   price: number;
-  inventory: number;
 }

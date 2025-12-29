@@ -1,0 +1,40 @@
+{% comment %}
+  bundle-cart-items.liquid
+  - Display bundle items in cart
+  - Discount is applied by Shopify Function
+{% endcomment %}
+
+{% for item in cart.items %}
+
+  {% assign is_bundle = false %}
+  {% if item.properties.is_bundle == 'true' %}
+    {% assign is_bundle = true %}
+  {% endif %}
+
+  <div class="cart-item {% if is_bundle %}bundle-item{% endif %}">
+    <div class="cart-item__image">
+      {{ item.image | image_url: width: 120 | image_tag }}
+    </div>
+
+    <div class="cart-item__info">
+      <div class="cart-item__title">
+        {{ item.product.title }}
+      </div>
+
+      {% if is_bundle %}
+        <div class="bundle-badge">
+          Bundle: {{ item.properties.bundle_name }}
+        </div>
+      {% endif %}
+
+      <div class="cart-item__price">
+        {{ item.final_line_price | money }}
+      </div>
+
+      <div class="cart-item__quantity">
+        Qty: {{ item.quantity }}
+      </div>
+    </div>
+  </div>
+
+{% endfor %}

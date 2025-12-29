@@ -37,22 +37,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const imageEntry = formData.get("image");
   let image = "";
 
-  console.log("[Bundle Create] Image entry received:", {
-    hasImageEntry: !!imageEntry,
-    isFile: imageEntry && typeof imageEntry !== "string",
-    type: typeof imageEntry,
-  });
-
   if (imageEntry && typeof imageEntry !== "string") {
     // Received a File - save locally and get public URL
     try {
       const file = imageEntry as File;
-      console.log("[Bundle Create] File details:", {
-        name: file.name,
-        size: file.size,
-        type: file.type,
-      });
-
       const arrayBuffer = await file.arrayBuffer();
       const buffer = Buffer.from(arrayBuffer);
       const uploadsDir = path.join(process.cwd(), "public", "uploads");
@@ -65,15 +53,12 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       const host = request.headers.get("host") || "localhost:3000";
       const protocol = request.headers.get("x-forwarded-proto") || "http";
       image = `${protocol}://${host}/uploads/${filename}`;
-
-      console.log("[Bundle Create] ✅ File saved, public URL:", image);
     } catch (err) {
       console.error("[Bundle Create] ❌ Failed to save image:", err);
       image = "";
     }
   } else {
     image = (imageEntry as string) || "";
-    console.log("[Bundle Create] Using existing image URL:", image);
   }
 
   if (!name || !itemsJson) {
@@ -88,8 +73,6 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
   try {
     // Create bundle in database first
-    console.log("[Bundle Create] Creating bundle with imageUrl:", image);
-
     const bundle = await db.bundle.create({
       data: {
         name,
@@ -115,16 +98,6 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       },
     });
 
-    console.log("[Bundle Create] ✅ Bundle saved to database:", {
-      id: bundle.id,
-      name: bundle.name,
-      imageUrl: bundle.imageUrl,
-    });
-
-    console.log(
-      `[Bundle Create] Created bundle ${bundle.id}, now syncing to Shopify...`,
-    );
-
     // Create Shopify product with bundle data in metafields
     const result = await createOrUpdateBundleProduct(admin, {
       bundleId: bundle.id,
@@ -137,15 +110,18 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       active,
       startDate: startDate || null,
       endDate: endDate || null,
+      existingProductGid: bundle.bundleProductGid || null,
     });
 
-    console.log("[Bundle Create] Sync result:", result);
+    await db.bundle.update({
+      where: { id: bundle.id },
+      data: { bundleProductGid: result.productGid },
+    });
 
     if (result.success && result.productGid) {
       // Upload image to Product if we have imageUrl
       if (image) {
         try {
-          console.log("[Bundle Create] Uploading image to Product...");
           const mediaResponse = await admin.graphql(
             `#graphql
             mutation productCreateMedia($productId: ID!, $media: [CreateMediaInput!]!) {
@@ -183,8 +159,6 @@ export const action = async ({ request }: ActionFunctionArgs) => {
               "[Bundle Create] ❌ Failed to upload product image:",
               mediaData.data.productCreateMedia.mediaUserErrors[0].message,
             );
-          } else {
-            console.log("[Bundle Create] ✅ Product image uploaded");
           }
         } catch (error) {
           console.error(
@@ -195,17 +169,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       }
 
       // Update bundle with Shopify product GID
-      console.log(
-        "[Bundle Create] Updating DB with productGid:",
-        result.productGid,
-      );
       const updated = await db.bundle.update({
         where: { id: bundle.id },
         data: { bundleProductGid: result.productGid },
-      });
-      console.log("[Bundle Create] ✅ DB updated:", {
-        id: updated.id,
-        bundleProductGid: updated.bundleProductGid,
       });
     } else {
       console.error(
@@ -230,16 +196,12 @@ export default function NewBundle() {
   const discardButtonRef = useRef<any>(null);
 
   const handleSave = useCallback(async () => {
-    console.log("Save button clicked");
     if (submitRef.current) {
       await submitRef.current();
-    } else {
-      console.error("submitRef.current is null");
     }
   }, []);
 
   const handleDiscard = useCallback(() => {
-    console.log("Discard button clicked");
     navigate("/app");
   }, [navigate]);
 

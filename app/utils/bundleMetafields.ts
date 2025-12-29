@@ -1,37 +1,36 @@
 import type { AdminApiContext } from "@shopify/shopify-app-react-router/server";
 import type { ProductItem } from "../types";
 
-/**
- * Bundle data structure to store in metafields
- */
 export interface BundleMetafieldData {
   bundleId: string;
   name: string;
   description: string | null;
   imageUrl: string | null;
-  discountType: string | null;
+
+  discountType: "percentage" | "fixed" | null;
   discountValue: number | null;
+
   active: boolean;
+
   items: {
     productId: string;
-    variantId: string;
-    productTitle: string;
-    productHandle: string;
-    variantTitle: string;
-    imageUrl: string | null;
+    variantId: string | null;
     quantity: number;
     price: number;
+    title?: string;
+    variantTitle?: string;
+    handle?: string;
+    image?: string;
   }[];
+
   originalPrice: number;
   bundlePrice: number;
+  totalDiscount: number;
+
   startDate: string | null;
   endDate: string | null;
 }
 
-/**
- * Create or update bundle product in Shopify
- * This creates a "bundle product" that represents the bundle on the storefront
- */
 export async function createOrUpdateBundleProduct(
   admin: AdminApiContext,
   bundleData: {
@@ -40,7 +39,7 @@ export async function createOrUpdateBundleProduct(
     description: string;
     imageUrl?: string | null;
     items: ProductItem[];
-    discountType: string | null;
+    discountType: "percentage" | "fixed" | null;
     discountValue: number | null;
     active: boolean;
     startDate: string | null;
@@ -49,74 +48,84 @@ export async function createOrUpdateBundleProduct(
   },
 ): Promise<{ success: boolean; productGid?: string; error?: string }> {
   try {
-    // Calculate prices
+    // 1. TÍNH GIÁ GỐC & DISCOUNT
+
     const originalPrice = bundleData.items.reduce(
       (sum, item) => sum + item.price,
       0,
     );
-    let bundlePrice = originalPrice;
 
-    if (bundleData.discountType && bundleData.discountValue) {
+    let bundlePrice = originalPrice;
+    let totalDiscount = 0;
+
+    if (
+      bundleData.discountType &&
+      bundleData.discountValue &&
+      bundleData.discountValue > 0
+    ) {
       if (bundleData.discountType === "percentage") {
-        bundlePrice = originalPrice * (1 - bundleData.discountValue / 100);
+        bundlePrice =
+          originalPrice * (1 - bundleData.discountValue / 100);
+        totalDiscount = originalPrice - bundlePrice;
       } else if (bundleData.discountType === "fixed") {
-        bundlePrice = originalPrice - bundleData.discountValue;
+        const totalFixedDiscount = bundleData.discountValue * bundleData.items.length;
+        bundlePrice = Math.max(
+          0,
+          originalPrice - totalFixedDiscount,
+        );
+        totalDiscount = originalPrice - bundlePrice;
       }
     }
 
-    // Prepare metafield data
+    // 2. DANH SÁCH ITEM (KHÔNG DISCOUNT PER ITEM)
+
+    const items = bundleData.items.map((item) => ({
+      productId: item.productId,
+      variantId: item.variantId || null,
+      quantity: 1,
+      price: item.price,
+      title: item.title,
+      variantTitle: item.variant,
+      handle: item.handle,
+      image: item.image,
+    }));
+
+    // 3. METAFIELD DATA
+
     const metafieldData: BundleMetafieldData = {
       bundleId: bundleData.bundleId,
       name: bundleData.name,
       description: bundleData.description,
-      imageUrl: bundleData.imageUrl,
+      imageUrl: bundleData.imageUrl || null,
+
       discountType: bundleData.discountType,
       discountValue: bundleData.discountValue,
+
       active: bundleData.active,
-      items: bundleData.items.map((item) => ({
-        productId: item.productId,
-        variantId: item.variantId,
-        productTitle: item.title,
-        productHandle: item.productId.replace("gid://shopify/Product/", ""),
-        variantTitle: item.variant,
-        imageUrl: item.image || null,
-        quantity: 1,
-        price: item.price,
-      })),
-      originalPrice,
-      bundlePrice,
+      items,
+
+      originalPrice: Math.round(originalPrice * 100) / 100,
+      bundlePrice: Math.round(bundlePrice * 100) / 100,
+      totalDiscount: Math.round(totalDiscount * 100) / 100,
+
       startDate: bundleData.startDate,
       endDate: bundleData.endDate,
     };
 
+    // 4. UPDATE PRODUCT BUNDLE
     if (bundleData.existingProductGid) {
-      // Update existing product
       const response = await admin.graphql(
         `#graphql
-        mutation UpdateBundleProduct($input: ProductInput!) {
-          productUpdate(input: $input) {
-            product {
-              id
-              title
-              descriptionHtml
-              variants(first: 1) {
-                edges {
-                  node {
-                    id
-                  }
-                }
-              }
-            }
-            userErrors {
-              field
-              message
-            }
+        mutation productUpdate($id: ID!, $input: ProductUpdateInput!) {
+          productUpdate(id: $id, input: $input) {
+            product { id }
+            userErrors { field message }
           }
         }`,
         {
           variables: {
+            id: bundleData.existingProductGid,
             input: {
-              id: bundleData.existingProductGid,
               title: bundleData.name,
               descriptionHtml: bundleData.description,
               status: bundleData.active ? "ACTIVE" : "DRAFT",
@@ -134,193 +143,61 @@ export async function createOrUpdateBundleProduct(
       );
 
       const data = await response.json();
-
-      if (data.data?.productUpdate?.userErrors?.length > 0) {
+      if (data.data?.productUpdate?.userErrors?.length) {
         return {
           success: false,
           error: data.data.productUpdate.userErrors[0].message,
         };
       }
 
-      // Update variant price
-      const variantId =
-        data.data?.productUpdate?.product?.variants?.edges?.[0]?.node?.id;
-      if (variantId) {
-        console.log(
-          `[Sync] Updating variant price for ${variantId}: $${bundlePrice.toFixed(2)} (was $${originalPrice.toFixed(2)})`,
-        );
-        try {
-          const variantResponse = await admin.graphql(
-            `#graphql
-            mutation productVariantsBulkUpdate($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
-              productVariantsBulkUpdate(productId: $productId, variants: $variants) {
-                productVariants {
-                  id
-                  price
-                  compareAtPrice
-                }
-                userErrors {
-                  field
-                  message
-                }
-              }
-            }`,
-            {
-              variables: {
-                productId: bundleData.existingProductGid,
-                variants: [
-                  {
-                    id: variantId,
-                    price: bundlePrice.toFixed(2),
-                    compareAtPrice: originalPrice.toFixed(2),
-                  },
-                ],
-              },
-            },
-          );
+      return { success: true, productGid: bundleData.existingProductGid };
+    }
 
-          const variantData = await variantResponse.json();
-          if (
-            variantData.data?.productVariantsBulkUpdate?.userErrors?.length > 0
-          ) {
-            console.error(
-              "[Sync] Variant update errors:",
-              variantData.data.productVariantsBulkUpdate.userErrors,
-            );
-          } else {
-            console.log("[Sync] ✅ Variant price updated successfully");
-          }
-        } catch (err) {
-          console.error("[Sync] Error updating variant:", err);
+    // 5. CREATE PRODUCT BUNDLE
+
+    const response = await admin.graphql(
+      `#graphql
+      mutation productCreate($input: ProductInput!) {
+        productCreate(input: $input) {
+          product { id }
+          userErrors { field message }
         }
-      }
-
-      return {
-        success: true,
-        productGid: data.data?.productUpdate?.product?.id,
-      };
-    } else {
-      // Create new product
-      const response = await admin.graphql(
-        `#graphql
-        mutation CreateBundleProduct($input: ProductInput!) {
-          productCreate(input: $input) {
-            product {
-              id
-              title
-              descriptionHtml
-              variants(first: 1) {
-                edges {
-                  node {
-                    id
-                  }
-                }
-              }
-            }
-            userErrors {
-              field
-              message
-            }
-          }
-        }`,
-        {
-          variables: {
-            input: {
-              title: `[Bundle] ${bundleData.name}`,
-              descriptionHtml: bundleData.description || "",
-              status: bundleData.active ? "ACTIVE" : "DRAFT",
-              productType: "Bundle",
-              vendor: "Bundle App",
-              metafields: [
-                {
-                  namespace: "custom",
-                  key: "bundle_data",
-                  type: "json",
-                  value: JSON.stringify(metafieldData),
-                },
-              ],
-            },
+      }`,
+      {
+        variables: {
+          input: {
+            title: `[Bundle] ${bundleData.name}`,
+            descriptionHtml: bundleData.description || "",
+            status: bundleData.active ? "ACTIVE" : "DRAFT",
+            productType: "Bundle",
+            vendor: "Bundle App",
+            metafields: [
+              {
+                namespace: "custom",
+                key: "bundle_data",
+                type: "json",
+                value: JSON.stringify(metafieldData),
+              },
+            ],
           },
         },
-      );
+      },
+    );
 
-      const data = await response.json();
-
-      if (data.data?.productCreate?.userErrors?.length > 0) {
-        return {
-          success: false,
-          error: data.data.productCreate.userErrors[0].message,
-        };
-      }
-
-      const productGid = data.data?.productCreate?.product?.id;
-
-      if (!productGid) {
-        return {
-          success: false,
-          error: "Failed to get product ID after creation",
-        };
-      }
-
-      // Update variant price
-      const variantId =
-        data.data?.productCreate?.product?.variants?.edges?.[0]?.node?.id;
-      if (variantId && productGid) {
-        console.log(
-          `[Sync] Setting variant price for new product ${productGid}: $${bundlePrice.toFixed(2)} (compare: $${originalPrice.toFixed(2)})`,
-        );
-        try {
-          const variantResponse = await admin.graphql(
-            `#graphql
-            mutation productVariantsBulkUpdate($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
-              productVariantsBulkUpdate(productId: $productId, variants: $variants) {
-                productVariants {
-                  id
-                  price
-                  compareAtPrice
-                }
-                userErrors {
-                  field
-                  message
-                }
-              }
-            }`,
-            {
-              variables: {
-                productId: productGid,
-                variants: [
-                  {
-                    id: variantId,
-                    price: bundlePrice.toFixed(2),
-                    compareAtPrice: originalPrice.toFixed(2),
-                  },
-                ],
-              },
-            },
-          );
-
-          const variantData = await variantResponse.json();
-          if (
-            variantData.data?.productVariantsBulkUpdate?.userErrors?.length > 0
-          ) {
-            console.error(
-              "[Sync] Variant update errors:",
-              variantData.data.productVariantsBulkUpdate.userErrors,
-            );
-          } else {
-            console.log("[Sync] ✅ Variant price set successfully");
-          }
-        } catch (err) {
-          console.error("[Sync] Error setting variant price:", err);
-        }
-      }
-
-      // Product created successfully with metafield data and image
+    const data = await response.json();
+    if (data.data?.productCreate?.userErrors?.length) {
       return {
-        success: true,
-        productGid,
+        success: false,
+        error: data.data.productCreate.userErrors[0].message,
       };
     }
+
+    const productGid = data.data?.productCreate?.product?.id;
+    if (!productGid) {
+      return { success: false, error: "Failed to create bundle product" };
+    }
+
+    return { success: true, productGid };
   } catch (error) {
     console.error("Error creating/updating bundle product:", error);
     return {
@@ -330,9 +207,8 @@ export async function createOrUpdateBundleProduct(
   }
 }
 
-/**
- * Delete bundle product from Shopify
- */
+// DELETE BUNDLE PRODUCT
+
 export async function deleteBundleProduct(
   admin: AdminApiContext,
   productGid: string,
@@ -340,27 +216,17 @@ export async function deleteBundleProduct(
   try {
     const response = await admin.graphql(
       `#graphql
-      mutation DeleteProduct($input: ProductDeleteInput!) {
-        productDelete(input: $input) {
+      mutation productDelete($id: ID!) {
+        productDelete(input: { id: $id }) {
           deletedProductId
-          userErrors {
-            field
-            message
-          }
+          userErrors { field message }
         }
       }`,
-      {
-        variables: {
-          input: {
-            id: productGid,
-          },
-        },
-      },
+      { variables: { id: productGid } },
     );
 
     const data = await response.json();
-
-    if (data.data?.productDelete?.userErrors?.length > 0) {
+    if (data.data?.productDelete?.userErrors?.length) {
       return {
         success: false,
         error: data.data.productDelete.userErrors[0].message,

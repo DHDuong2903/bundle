@@ -1,0 +1,37 @@
+query RunInput {
+  cart {
+    lines {
+      id
+      quantity
+      isBundle: attribute(key: "_is_bundle_item") {
+        value
+      }
+      bundleId: attribute(key: "_bundle_id") {
+        value
+      }
+      bundleName: attribute(key: "_bundle_name") {
+        value
+      }
+      bundleDiscountValue: attribute(key: "_bundle_discount_value") {
+        value
+      }
+      bundleDiscountType: attribute(key: "_bundle_discount_type") {
+        value
+      }
+      cost {
+        amountPerQuantity {
+          amount
+        }
+      }
+      merchandise {
+        __typename
+        ... on ProductVariant {
+          id
+          metafield(namespace: "custom", key: "bundle_info") {
+            value
+          }
+        }
+      }
+    }
+  }
+}
