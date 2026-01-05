@@ -15,9 +15,7 @@ import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "../shopify.server";
 import db from "../db.server";
 import type { BundleListData } from "../types";
-import {
-  deleteBundleProduct,
-} from "../utils/bundleMetafields";
+import { deleteBundleProduct } from "../utils/bundleMetafields";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { admin, session } = await authenticate.admin(request);
@@ -78,17 +76,23 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
   if (action === "delete" && bundleId) {
     try {
-      // Get bundle to find product GID
+      // Get bundle to find product GID and child items
       const bundle = await db.bundle.findUnique({
         where: {
           id: bundleId,
           shopDomain: session.shop,
         },
+        include: { items: true },
       });
 
-      // Delete Shopify product if it exists
-      if (bundle?.bundleProductGid) {
-        await deleteBundleProduct(admin, bundle.bundleProductGid);
+      if (bundle) {
+        const childProductIds = bundle.items.map((item) => item.productId);
+        await deleteBundleProduct(
+          admin,
+          bundle.bundleProductGid || "",
+          bundleId,
+          childProductIds,
+        );
       }
 
       // Delete bundle from database
@@ -98,7 +102,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
           shopDomain: session.shop,
         },
       });
-      return { success: true };
+      return { success: true, message: "Bundle deleted successfully" };
     } catch (error) {
       console.error("Error deleting bundle:", error);
       return { error: "Failed to delete bundle" };
@@ -123,7 +127,7 @@ export default function Index() {
     "all",
   );
   const [discountTypeFilter, setDiscountTypeFilter] = useState<
-    "all" | "percentage" | "fixed"
+    "all" | "percentage" | "fixed" 
   >("all");
   const [currentPage, setCurrentPage] = useState(1);
   const itemsPerPage = 5;

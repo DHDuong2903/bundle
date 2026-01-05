@@ -4,7 +4,7 @@ import type {
   HeadersFunction,
   LoaderFunctionArgs,
 } from "react-router";
-import { redirect, useNavigate } from "react-router";
+import { redirect, useNavigate, useLoaderData } from "react-router";
 import { useState, useRef, useEffect, useCallback } from "react";
 import fs from "fs";
 import path from "path";
@@ -16,10 +16,15 @@ import db from "../db.server";
 import { BundleForm } from "../components/bundles/BundleForm";
 import type { ProductItem } from "../types";
 import { createOrUpdateBundleProduct } from "../utils/bundleMetafields";
+import { uploadImageToShopify, addMediaToProduct } from "../utils/shopifyImageUpload";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  await authenticate.admin(request);
-  return null;
+  const { session } = await authenticate.admin(request);
+  const labels = await db.label.findMany({
+    where: { shopDomain: session.shop },
+    select: { id: true, name: true }
+  });
+  return { labels };
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
@@ -34,8 +39,12 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const startDate = formData.get("startDate") as string;
   const endDate = formData.get("endDate") as string;
   const itemsJson = formData.get("items") as string;
+  const labelIdsJson = formData.get("labelIds") as string;
+  const labelIds = labelIdsJson ? JSON.parse(labelIdsJson) : [];
+
   const imageEntry = formData.get("image");
   let image = "";
+  let imageFile: { name: string; type: string; size: number; buffer: Buffer } | null = null;
 
   if (imageEntry && typeof imageEntry !== "string") {
     // Received a File - save locally and get public URL
@@ -43,6 +52,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       const file = imageEntry as File;
       const arrayBuffer = await file.arrayBuffer();
       const buffer = Buffer.from(arrayBuffer);
+      imageFile = { name: file.name, type: file.type, size: file.size, buffer };
+      
       const uploadsDir = path.join(process.cwd(), "public", "uploads");
       await fs.promises.mkdir(uploadsDir, { recursive: true });
       const filename = `${randomUUID()}-${file.name}`;
@@ -84,9 +95,13 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         active,
         startDate: startDate ? new Date(startDate) : null,
         endDate: endDate ? new Date(endDate) : null,
+        labels: {
+          create: labelIds.map((id: string) => ({ labelId: id })),
+        },
         items: {
           create: items.map((item) => ({
             productId: item.productId,
+            handle: item.handle || null,
             variantId: item.variantId || null,
             quantity: 1,
             productTitle: item.title || null,
@@ -111,68 +126,39 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       startDate: startDate || null,
       endDate: endDate || null,
       existingProductGid: bundle.bundleProductGid || null,
-    });
-
-    await db.bundle.update({
-      where: { id: bundle.id },
-      data: { bundleProductGid: result.productGid },
+      labelId: labelIds[0] || null,
     });
 
     if (result.success && result.productGid) {
-      // Upload image to Product if we have imageUrl
-      if (image) {
-        try {
-          const mediaResponse = await admin.graphql(
-            `#graphql
-            mutation productCreateMedia($productId: ID!, $media: [CreateMediaInput!]!) {
-              productCreateMedia(productId: $productId, media: $media) {
-                media {
-                  id
-                  ... on MediaImage {
-                    image {
-                      url
-                    }
-                  }
-                }
-                mediaUserErrors {
-                  field
-                  message
-                }
-              }
-            }`,
-            {
-              variables: {
-                productId: result.productGid,
-                media: [
-                  {
-                    originalSource: image,
-                    mediaContentType: "IMAGE",
-                  },
-                ],
-              },
-            },
-          );
-
-          const mediaData = await mediaResponse.json();
-          if (mediaData.data?.productCreateMedia?.mediaUserErrors?.length > 0) {
-            console.error(
-              "[Bundle Create] ❌ Failed to upload product image:",
-              mediaData.data.productCreateMedia.mediaUserErrors[0].message,
-            );
-          }
-        } catch (error) {
-          console.error(
-            "[Bundle Create] ❌ Error uploading product image:",
-            error,
-          );
-        }
-      }
-
-      // Update bundle with Shopify product GID
-      const updated = await db.bundle.update({
+      await db.bundle.update({
         where: { id: bundle.id },
         data: { bundleProductGid: result.productGid },
       });
+
+      // Upload image to Shopify CDN if we have a file or a valid URL
+      try {
+        let finalImageSource = image;
+
+        // Nếu là file mới upload, dùng Staged Upload để đẩy lên Shopify CDN
+        if (imageFile) {
+          console.log("[Bundle Create] Uploading image to Shopify Staged Uploads...");
+          finalImageSource = await uploadImageToShopify(admin, imageFile);
+        }
+
+        if (finalImageSource) {
+          const mediaResult = await addMediaToProduct(admin, result.productGid, finalImageSource);
+          if (mediaResult?.mediaUserErrors?.length > 0) {
+            console.error(
+              "[Bundle Create] ❌ Failed to upload product image:",
+              mediaResult.mediaUserErrors[0].message,
+            );
+          } else {
+            console.log("[Bundle Create] ✅ Product image synced successfully");
+          }
+        }
+      } catch (error) {
+        console.error("[Bundle Create] ❌ Error syncing product image:", error);
+      }
     } else {
       console.error(
         "[Bundle Create] ❌ Failed to create Shopify product:",
@@ -188,6 +174,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 };
 
 export default function NewBundle() {
+  const { labels } = useLoaderData<typeof loader>();
   const navigate = useNavigate();
   const shopify = useAppBridge();
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -196,35 +183,45 @@ export default function NewBundle() {
   const discardButtonRef = useRef<any>(null);
 
   const handleSave = useCallback(async () => {
+    if (isSubmitting) return;
     if (submitRef.current) {
       await submitRef.current();
     }
-  }, []);
+  }, [isSubmitting]);
 
   const handleDiscard = useCallback(() => {
     navigate("/app");
   }, [navigate]);
 
+  // Stable handlers using refs
+  const saveHandlerRef = useRef(handleSave);
+  const discardHandlerRef = useRef(handleDiscard);
+  saveHandlerRef.current = handleSave;
+  discardHandlerRef.current = handleDiscard;
+
   useEffect(() => {
     const saveButton = saveButtonRef.current;
     const discardButton = discardButtonRef.current;
 
+    const onSave = () => saveHandlerRef.current();
+    const onDiscard = () => discardHandlerRef.current();
+
     if (saveButton) {
-      saveButton.addEventListener("click", handleSave);
+      saveButton.addEventListener("click", onSave);
     }
     if (discardButton) {
-      discardButton.addEventListener("click", handleDiscard);
+      discardButton.addEventListener("click", onDiscard);
     }
 
     return () => {
       if (saveButton) {
-        saveButton.removeEventListener("click", handleSave);
+        saveButton.removeEventListener("click", onSave);
       }
       if (discardButton) {
-        discardButton.removeEventListener("click", handleDiscard);
+        discardButton.removeEventListener("click", onDiscard);
       }
     };
-  }, [handleSave, handleDiscard]);
+  }, []); // Run once on mount
 
   const handleSubmit = useCallback(
     async (data: {
@@ -236,9 +233,13 @@ export default function NewBundle() {
       startDate: string;
       endDate: string;
       items: ProductItem[];
+      labelIds?: string[];
       image?: string;
       imageFile?: File | null;
     }) => {
+      if (isSubmitting) return;
+      setIsSubmitting(true);
+
       const formData = new FormData();
       formData.append("name", data.name);
       formData.append("description", data.description);
@@ -256,8 +257,8 @@ export default function NewBundle() {
       formData.append("startDate", data.startDate);
       formData.append("endDate", data.endDate);
       formData.append("items", JSON.stringify(data.items));
+      if (data.labelIds) formData.append("labelIds", JSON.stringify(data.labelIds));
 
-      setIsSubmitting(true);
       try {
         const response = await fetch("/app/bundles/new", {
           method: "POST",
@@ -272,15 +273,15 @@ export default function NewBundle() {
           shopify.toast.show(error.error || "Failed to create bundle", {
             isError: true,
           });
+          setIsSubmitting(false);
         }
       } catch (error) {
         console.error("Error creating bundle:", error);
         shopify.toast.show("Failed to create bundle", { isError: true });
-      } finally {
         setIsSubmitting(false);
       }
     },
-    [shopify, navigate],
+    [shopify, navigate, isSubmitting],
   );
 
   return (
@@ -302,7 +303,7 @@ export default function NewBundle() {
         Discard
       </s-button>
 
-      <BundleForm onSubmit={handleSubmit} onSubmitRef={submitRef} />
+      <BundleForm onSubmit={handleSubmit} onSubmitRef={submitRef} labels={labels} />
     </s-page>
   );
 }

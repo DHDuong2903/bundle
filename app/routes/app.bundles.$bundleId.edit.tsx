@@ -16,6 +16,7 @@ import db from "../db.server";
 import { BundleForm } from "../components/bundles/BundleForm";
 import type { ProductItem, DiscountType, BundleEditLoaderData } from "../types";
 import { createOrUpdateBundleProduct } from "../utils/bundleMetafields";
+import { uploadImageToShopify, addMediaToProduct } from "../utils/shopifyImageUpload";
 
 export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   const { admin, session } = await authenticate.admin(request);
@@ -32,12 +33,18 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     },
     include: {
       items: true,
+      labels: true,
     },
   });
 
   if (!bundle) {
     throw new Response("Bundle not found", { status: 404 });
   }
+
+  const labels = await db.label.findMany({
+    where: { shopDomain: session.shop },
+    select: { id: true, name: true }
+  });
 
   // Fetch product details from Shopify - parallel requests for better performance
   const productPromises = bundle.items.map(async (item, index) => {
@@ -48,6 +55,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
             product(id: $id) {
               id
               title
+              handle
               variants(first: 10) {
                 nodes {
                   id
@@ -109,6 +117,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
         return {
           id: `${product.id}-${index}`,
           productId: product.id,
+          handle: product.handle,
           variantId: variant?.id || item.variantId || "",
           title: product.title,
           sku: variant?.sku || item.sku || "N/A",
@@ -145,7 +154,9 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
       startDate: bundle.startDate?.toISOString().split("T")[0] || null,
       endDate: bundle.endDate?.toISOString().split("T")[0] || null,
       items: productItems,
+      labelIds: bundle.labels.map(l => l.labelId),
     },
+    labels
   };
 };
 
@@ -162,14 +173,20 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
   const startDate = formData.get("startDate") as string;
   const endDate = formData.get("endDate") as string;
   const itemsJson = formData.get("items") as string;
+  const labelIdsJson = formData.get("labelIds") as string;
+  const labelIds = labelIdsJson ? JSON.parse(labelIdsJson) : [];
+
   const imageEntry = formData.get("image");
   let image = "";
+  let imageFile: { name: string; type: string; size: number; buffer: Buffer } | null = null;
 
   if (imageEntry && typeof imageEntry !== "string") {
     try {
       const file = imageEntry as File;
       const arrayBuffer = await file.arrayBuffer();
       const buffer = Buffer.from(arrayBuffer);
+      imageFile = { name: file.name, type: file.type, size: file.size, buffer };
+
       const uploadsDir = path.join(process.cwd(), "public", "uploads");
       await fs.promises.mkdir(uploadsDir, { recursive: true });
       const filename = `${randomUUID()}-${file.name}`;
@@ -214,10 +231,15 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
         active,
         startDate: startDate ? new Date(startDate) : null,
         endDate: endDate ? new Date(endDate) : null,
+        labels: {
+          deleteMany: {},
+          create: labelIds.map((id: string) => ({ labelId: id })),
+        },
         items: {
           deleteMany: {},
           create: items.map((item) => ({
             productId: item.productId,
+            handle: item.handle || null,
             variantId: item.variantId || null,
             quantity: 1,
             productTitle: item.title || null,
@@ -242,14 +264,41 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
       startDate: startDate || null,
       endDate: endDate || null,
       existingProductGid: bundle.bundleProductGid,
+      labelId: labelIds[0] || null,
     });
 
-    if (result.success && result.productGid && !bundle.bundleProductGid) {
-      // Update bundle with product GID if it didn't exist
-      await db.bundle.update({
-        where: { id: bundle.id },
-        data: { bundleProductGid: result.productGid },
-      });
+    if (result.success && result.productGid) {
+      if (!bundle.bundleProductGid) {
+        // Update bundle with product GID if it didn't exist
+        await db.bundle.update({
+          where: { id: bundle.id },
+          data: { bundleProductGid: result.productGid },
+        });
+      }
+
+      // Sync image to Shopify CDN if it's a new upload or we have a URL
+      try {
+        let finalImageSource = image;
+
+        if (imageFile) {
+          console.log("[Bundle Edit] Uploading new image to Shopify Staged Uploads...");
+          finalImageSource = await uploadImageToShopify(admin, imageFile);
+        }
+
+        if (finalImageSource) {
+          const mediaResult = await addMediaToProduct(admin, result.productGid, finalImageSource);
+          if (mediaResult?.mediaUserErrors?.length > 0) {
+            console.error(
+              "[Bundle Edit] ❌ Failed to update product image:",
+              mediaResult.mediaUserErrors[0].message,
+            );
+          } else {
+            console.log("[Bundle Edit] ✅ Product image synced successfully");
+          }
+        }
+      } catch (error) {
+        console.error("[Bundle Edit] ❌ Error syncing product image:", error);
+      }
     }
 
     return redirect("/app");
@@ -260,7 +309,7 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
 };
 
 export default function EditBundle() {
-  const { bundle } = useLoaderData<BundleEditLoaderData>();
+  const { bundle, labels } = useLoaderData<BundleEditLoaderData>();
   const navigate = useNavigate();
   const shopify = useAppBridge();
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -269,35 +318,45 @@ export default function EditBundle() {
   const discardButtonRef = useRef<any>(null);
 
   const handleSave = useCallback(async () => {
+    if (isSubmitting) return;
     if (submitRef.current) {
       await submitRef.current();
     }
-  }, []);
+  }, [isSubmitting]);
 
   const handleDiscard = useCallback(() => {
     navigate("/app");
   }, [navigate]);
 
+  // Use refs to keep handlers stable for addEventListener
+  const saveHandlerRef = useRef(handleSave);
+  const discardHandlerRef = useRef(handleDiscard);
+  saveHandlerRef.current = handleSave;
+  discardHandlerRef.current = handleDiscard;
+
   useEffect(() => {
     const saveButton = saveButtonRef.current;
     const discardButton = discardButtonRef.current;
 
+    const onSave = () => saveHandlerRef.current();
+    const onDiscard = () => discardHandlerRef.current();
+
     if (saveButton) {
-      saveButton.addEventListener("click", handleSave);
+      saveButton.addEventListener("click", onSave);
     }
     if (discardButton) {
-      discardButton.addEventListener("click", handleDiscard);
+      discardButton.addEventListener("click", onDiscard);
     }
 
     return () => {
       if (saveButton) {
-        saveButton.removeEventListener("click", handleSave);
+        saveButton.removeEventListener("click", onSave);
       }
       if (discardButton) {
-        discardButton.removeEventListener("click", handleDiscard);
+        discardButton.removeEventListener("click", onDiscard);
       }
     };
-  }, [handleSave, handleDiscard]);
+  }, []); // Mount only
 
   const handleSubmit = useCallback(
     async (data: {
@@ -309,9 +368,13 @@ export default function EditBundle() {
       startDate: string;
       endDate: string;
       items: ProductItem[];
+      labelIds?: string[];
       image?: string;
       imageFile?: File | null;
     }) => {
+      if (isSubmitting) return;
+      setIsSubmitting(true);
+
       const formData = new FormData();
       formData.append("name", data.name);
       formData.append("description", data.description);
@@ -320,6 +383,8 @@ export default function EditBundle() {
       formData.append("active", data.active.toString());
       formData.append("startDate", data.startDate);
       formData.append("endDate", data.endDate);
+      if (data.labelIds) formData.append("labelIds", JSON.stringify(data.labelIds));
+
       if (
         data.imageFile &&
         typeof (data.imageFile as any).arrayBuffer === "function"
@@ -330,7 +395,6 @@ export default function EditBundle() {
       }
       formData.append("items", JSON.stringify(data.items));
 
-      setIsSubmitting(true);
       try {
         const response = await fetch(`/app/bundles/${bundle.id}/edit`, {
           method: "POST",
@@ -340,20 +404,21 @@ export default function EditBundle() {
         if (response.ok) {
           shopify.toast.show("Bundle updated successfully");
           navigate("/app");
-        } else {
+        }
+        else {
           const error = await response.json();
           shopify.toast.show(error.error || "Failed to update bundle", {
             isError: true,
           });
+          setIsSubmitting(false);
         }
       } catch (error) {
         console.error("Error updating bundle:", error);
         shopify.toast.show("Failed to update bundle", { isError: true });
-      } finally {
         setIsSubmitting(false);
       }
     },
-    [bundle.id, shopify, navigate],
+    [bundle.id, shopify, navigate, isSubmitting],
   );
 
   return (
@@ -384,9 +449,11 @@ export default function EditBundle() {
           startDate: bundle.startDate || "",
           endDate: bundle.endDate || "",
           items: bundle.items,
+          labelIds: bundle.labelIds || [],
         }}
         onSubmit={handleSubmit}
         onSubmitRef={submitRef}
+        labels={labels}
       />
     </s-page>
   );

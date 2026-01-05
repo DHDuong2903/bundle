@@ -1,296 +1,103 @@
-{% comment %}
-  bundle_display.liquid
-  - Render bundle on product page
-  - Add bundle items to cart
-  - Discount is applied by Shopify Function
-{% endcomment %}
+{% assign related_bundles = product.metafields.custom.related_bundles.value %}
 
-{% assign bundle_data = product.metafields.custom.bundle_data.value %}
-
-{% if bundle_data != blank %}
+{% if related_bundles != blank %}
   <style>
-    .bundle-container {
-      border: 1px solid #e5e7eb;
-      border-radius: 8px;
-      padding: 20px;
-      margin: 20px 0;
-      background-color: #fff;
-    }
-    .bundle-header {
-      margin-bottom: 16px;
-      border-bottom: 1px solid #f3f4f6;
-      padding-bottom: 12px;
-    }
-    .bundle-title {
-      font-size: 1.25rem;
-      font-weight: 700;
-      margin: 0 0 8px 0;
-      color: #111827;
-    }
-    .bundle-badge {
-      display: inline-block;
-      padding: 4px 8px;
-      background-color: #d1fae5;
-      color: #065f46;
-      border-radius: 4px;
-      font-size: 0.875rem;
-      font-weight: 500;
-    }
-    .bundle-items {
-      display: flex;
-      flex-direction: column;
-      gap: 16px;
-      margin-bottom: 20px;
-    }
-    .bundle-item {
-      display: flex;
-      align-items: center;
-      gap: 16px;
-      padding-bottom: 16px;
-      border-bottom: 1px solid #f3f4f6;
-    }
-    .bundle-item:last-child {
-      border-bottom: none;
-      padding-bottom: 0;
-    }
-    .bundle-item-image {
-      width: 60px;
-      height: 60px;
-      border-radius: 6px;
-      object-fit: cover;
-      background-color: #f9fafb;
-    }
-    .bundle-item-info {
-      flex: 1;
-    }
-    .bundle-item-title {
-      font-weight: 500;
-      color: #374151;
-      margin: 0;
-    }
-    .bundle-item-price {
-      display: flex;
-      gap: 8px;
-      align-items: center;
-      font-size: 0.875rem;
-    }
-    .price-old {
-      text-decoration: line-through;
-      color: #9ca3af;
-    }
-    .price-new {
-      font-weight: 600;
-      color: #059669;
-    }
-    .bundle-footer {
-      background-color: #f9fafb;
-      padding: 16px;
-      border-radius: 8px;
-      margin-top: 16px;
-    }
-    .bundle-summary-row {
-      display: flex;
-      justify-content: space-between;
-      margin-bottom: 8px;
-      font-size: 0.9rem;
-    }
-    .bundle-total-row {
-      display: flex;
-      justify-content: space-between;
-      margin-top: 12px;
-      padding-top: 12px;
-      border-top: 1px solid #e5e7eb;
-      font-weight: 700;
-      font-size: 1.1rem;
-    }
-    .btn-add-bundle {
-      width: 100%;
-      background-color: #000;
-      color: #fff;
-      padding: 12px;
-      border: none;
-      border-radius: 4px;
-      font-weight: 600;
-      cursor: pointer;
-      margin-top: 16px;
-      transition: background-color 0.2s;
-    }
-    .btn-add-bundle:hover {
-      background-color: #333;
-    }
+    .dhd-bundle-section { margin: 30px 0; border: 2px solid #3b82f6; border-radius: 12px; overflow: hidden; background-color: #f8faff; text-align: left; }
+    .dhd-bundle-header { background-color: #3b82f6; color: white; padding: 12px 20px; display: flex; justify-content: space-between; align-items: center; }
+    .dhd-bundle-header h3 { margin: 0 !important; font-size: 1.1rem !important; color: white !important; font-weight: 700 !important; }
+    .dhd-discount-badge { background-color: #fcd34d; color: #92400e; padding: 4px 10px; border-radius: 20px; font-size: 0.85rem; font-weight: 800; }
+    .dhd-bundle-content { padding: 20px; }
+    .dhd-bundle-item { display: flex; align-items: center; gap: 15px; padding: 10px 0; border-bottom: 1px solid #e5eaf5; }
+    .dhd-bundle-item:last-child { border-bottom: none; }
+    .dhd-bundle-item-link { text-decoration: none !important; color: inherit !important; display: flex; align-items: center; gap: 15px; flex: 1; }
+    .dhd-bundle-item-link:hover .dhd-bundle-item-title { color: #2563eb !important; text-decoration: underline !important; }
+    .dhd-bundle-item-img { width: 60px !important; height: 60px !important; object-fit: cover; border-radius: 6px; border: 1px solid #ddd; }
+    .dhd-bundle-item-title { font-size: 0.95rem !important; font-weight: 600 !important; color: #111; margin: 0; }
+    .dhd-item-prices { display: flex; gap: 8px; align-items: center; margin-top: 4px; }
+    .dhd-item-old-price { font-size: 0.85rem !important; color: #94a3b8 !important; text-decoration: line-through !important; }
+    .dhd-item-new-price { font-size: 0.9rem !important; font-weight: 700 !important; color: #059669 !important; }
+    .dhd-bundle-footer { margin-top: 20px; padding-top: 15px; border-top: 2px dashed #cbd5e1; }
+    .dhd-total-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+    .dhd-total-old { text-decoration: line-through; color: #94a3b8; }
+    .dhd-total-new { font-size: 1.4rem; font-weight: 800; color: #059669; }
+    .dhd-add-bundle-btn { width: 100%; background-color: #2563eb !important; color: white !important; padding: 14px !important; border: none !important; border-radius: 8px !important; font-weight: 700 !important; cursor: pointer !important; }
+    .dhd-add-bundle-btn:hover { background-color: #1d4ed8 !important; }
   </style>
 
-  <div
-    id="bundle-app"
-    class="bundle-container"
-    data-bundle-id="{{ bundle_data.bundleId }}"
-    data-bundle-name="{{ bundle_data.name }}"
-  >
-    <div class="bundle-header">
-      <h3 class="bundle-title">{{ bundle_data.name }}</h3>
-      {% if bundle_data.discountValue > 0 %}
-        <span class="bundle-badge">
-          Discount:
-          {% if bundle_data.discountType == 'percentage' %}
-            {{ bundle_data.discountValue }}% Off
-          {% else %}
-            Save {{ bundle_data.discountValue | money }}
-          {% endif %}
-          (Per Item)
-        </span>
-      {% endif %}
-    </div>
-
-    <div class="bundle-items">
-      {% assign total_original = 0 %}
-      {% assign total_new = 0 %}
-      {% assign discount_val = bundle_data.discountValue | plus: 0 %}
-
-      {% for item in bundle_data.items %}
-        {% assign item_price = item.price %}
-        {% assign item_qty = item.quantity | default: 1 %}
-        
-        {% comment %} Calculate Item Discount {% endcomment %}
-        {% assign item_discount_amount = 0 %}
-        
-        {% if bundle_data.discountType == 'percentage' %}
-          {% assign discount_factor = discount_val | divided_by: 100.0 %}
-          {% assign item_discount_amount = item_price | times: discount_factor %}
-        {% else %}
-          {% assign item_discount_amount = discount_val %}
-        {% endif %}
-
-        {% assign item_new_price = item_price | minus: item_discount_amount %}
-        {% if item_new_price < 0 %}{% assign item_new_price = 0 %}{% endif %}
-
-        {% comment %} Accumulate Totals {% endcomment %}
-        {% assign line_original = item_price | times: item_qty %}
-        {% assign line_new = item_new_price | times: item_qty %}
-        
-        {% assign total_original = total_original | plus: line_original %}
-        {% assign total_new = total_new | plus: line_new %}
-
-        {% comment %} Convert to cents for money filter {% endcomment %}
-        {% assign price_old_cents = item.price | times: 100 %}
-        {% assign price_new_cents = item_new_price | times: 100 %}
-
-        <div class="bundle-item">
-          {% if item.image %}
-            <img src="{{ item.image }}" alt="{{ item.title }}" class="bundle-item-image">
-          {% else %}
-             {% assign fallback_image = blank %}
-             {% if item.handle %}
-                {% assign prod_ref = all_products[item.handle] %}
-                {% if prod_ref.featured_image %}
-                  {% assign fallback_image = prod_ref.featured_image %}
-                {% endif %}
-             {% endif %}
-             
-             {% if fallback_image %}
-               <img src="{{ fallback_image | img_url: '120x120', crop: 'center' }}" alt="{{ item.title }}" class="bundle-item-image">
-             {% else %}
-                <div class="bundle-item-image" style="display:flex;align-items:center;justify-content:center;color:#ccc;">
-                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><circle cx="8.5" cy="8.5" r="1.5"></circle><polyline points="21 15 16 10 5 21"></polyline></svg>
-                </div>
-             {% endif %}
-          {% endif %}
-          
-          <div class="bundle-item-info">
-            <p class="bundle-item-title">{{ item.title }}</p>
-            {% if item.variantTitle and item.variantTitle != 'Default Title' %}
-              <p style="margin: 0 0 4px 0; font-size: 0.85rem; color: #6b7280;">{{ item.variantTitle }}</p>
-            {% endif %}
-            <div class="bundle-item-price">
-              <span class="price-old">{{ price_old_cents | money }}</span>
-              <span class="price-new">{{ price_new_cents | money }}</span>
-              {% if item_qty > 1 %}
-                <span style="color:#666;font-size:0.8em;">x{{ item_qty }}</span>
-              {% endif %}
+  {% for bundle in related_bundles %}
+    {% if bundle.active == true or bundle.active == "true" %}
+      <div class="dhd-bundle-section">
+        <div class="dhd-bundle-header">
+          <h3>{{ bundle.bundleName }}</h3>
+          {% if bundle.discountValue > 0 %}
+            <div class="dhd-discount-badge">
+              {% if bundle.discountType == "percentage" %}SAVE {{ bundle.discountValue }}%{% else %}SAVE {{ bundle.discountValue | times: 100 | money }} OFF{% endif %}
             </div>
+          {% endif %}
+        </div>
+        <div class="dhd-bundle-content">
+          {% for item in bundle.items %}
+            <div class="dhd-bundle-item">
+              <a href="/products/{{ item.handle }}" class="dhd-bundle-item-link">
+                <img src="{{ item.image | default: 'https://cdn.shopify.com/s/images/admin/no-image-60x60.gif' }}" class="dhd-bundle-item-img" alt="{{ item.title }}">
+                <div class="dhd-bundle-item-info">
+                  <p class="dhd-bundle-item-title">{{ item.title }}</p>
+                  <div class="dhd-item-prices">
+                    {% if bundle.discountValue > 0 %}
+                      <span class="dhd-item-old-price">{{ item.price | times: 100 | money }}</span>
+                      {% assign discounted_price = item.price %}{% if bundle.discountType == "percentage" %}{% assign factor = 100 | minus: bundle.discountValue | divided_by: 100.0 %}{% assign discounted_price = item.price | times: factor %}{% else %}{% assign discounted_price = item.price | minus: bundle.discountValue %}{% endif %}
+                      <span class="dhd-item-new-price">{{ discounted_price | times: 100 | money }}</span>
+                    {% else %}<span class="dhd-item-new-price">{{ item.price | times: 100 | money }}</span>{% endif %}
+                  </div>
+                </div>
+              </a>
+            </div>
+          {% endfor %}
+          <div class="dhd-bundle-footer">
+            <div class="dhd-total-row"><span>Original Total:</span><span class="dhd-total-old">{{ bundle.originalPrice | times: 100 | money }}</span></div>
+            <div class="dhd-total-row"><span>Bundle Price:</span><span class="dhd-total-new">{{ bundle.bundlePrice | times: 100 | money }}</span></div>
+            <button type="button" class="dhd-add-bundle-btn" onclick='addBundleItemsToCart(event, {{ bundle | json | escape }})'>Add Bundle to Cart</button>
           </div>
         </div>
-      {% endfor %}
-    </div>
-
-    <div class="bundle-footer">
-      {% assign total_original_cents = total_original | times: 100 %}
-      {% assign total_new_cents = total_new | times: 100 %}
-      
-      <div class="bundle-summary-row">
-        <span>Total Value:</span>
-        <span style="text-decoration: line-through;">{{ total_original_cents | money }}</span>
       </div>
-      <div class="bundle-total-row">
-        <span>Bundle Price:</span>
-        <span style="color: #059669;">{{ total_new_cents | money }}</span>
-      </div>
-      
-      <button id="add-bundle-to-cart" class="btn-add-bundle" type="button">
-        Add Bundle to Cart - {{ total_new_cents | money }}
-      </button>
-    </div>
-  </div>
+    {% endif %}
+  {% endfor %}
 
   <script>
-    (function () {
-      const root = document.getElementById("bundle-app");
-      if (!root) return;
+    async function addBundleItemsToCart(event, bundleStr) {
+        event.preventDefault();
+        const btn = event.currentTarget;
+        let bundle = typeof bundleStr === 'string' ? JSON.parse(bundleStr) : bundleStr;
+        const originalText = btn.innerText;
+        btn.innerText = "Adding...";
+        btn.disabled = true;
 
-      const bundleId = root.dataset.bundleId;
-      const bundleName = root.dataset.bundleName;
+        const items = bundle.items.map(item => ({
+            id: item.variantId.split("/").pop(),
+            quantity: 1,
+            properties: { "Bundle": bundle.bundleName, "_is_bundle": "true", "_bundle_id": bundle.bundleId }
+        }));
 
-      // Note: We use the items exactly as they are in the metafield
-      const bundleItems = {{ bundle_data.items | json }};
-
-      document
-        .getElementById("add-bundle-to-cart")
-        .addEventListener("click", async function () {
-          const btn = this;
-          const originalText = btn.innerText;
-          btn.innerText = "Adding...";
-          btn.disabled = true;
-
-          const items = bundleItems.map(item => {
-            return {
-              id: item.variantId.split("/").pop(), // Extract ID from GID
-              quantity: item.quantity || 1,
-              properties: {
-                _is_bundle: "true",
-                _bundle_id: bundleId,
-                _bundle_name: bundleName,
-                
-                // Pass attributes to cart for the Function to read
-                _bundle_discount_value: {{ bundle_data.discountValue | json }},
-                _bundle_discount_type: {{ bundle_data.discountType | json }}
-              }
-            };
-          });
-
-          try {
-            const res = await fetch("/cart/add.js", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ items })
+        try {
+            const response = await fetch("/cart/add.js", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ items })
             });
-
-            if (!res.ok) throw new Error("Add bundle failed");
-
-            // Redirect to cart or open drawer
-            window.location.href = "/cart";
-          } catch (err) {
-            console.error(err);
-            alert("Failed to add bundle to cart");
+            if (response.ok) { window.location.href = "/cart"; } 
+            else { throw new Error("Failed to add bundle"); }
+        } catch (error) {
+            alert(error.message);
             btn.innerText = originalText;
             btn.disabled = false;
-          }
-        });
-    })();
+        }
+    }
   </script>
 {% endif %}
 
 {% schema %}
 {
-  "name": "Bundle display",
+  "name": "Bundle Display (PDP)",
   "target": "section",
   "settings": []
 }

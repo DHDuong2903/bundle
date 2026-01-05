@@ -18,6 +18,7 @@ export function BundleForm({
   initialData,
   onSubmit,
   onSubmitRef,
+  labels = [],
 }: BundleFormProps) {
   const shopify = useAppBridge();
 
@@ -37,6 +38,49 @@ export function BundleForm({
   const [startDate, setStartDate] = useState(initialData?.startDate || "");
   const [endDate, setEndDate] = useState(initialData?.endDate || "");
   const [items, setItems] = useState<ProductItem[]>(initialData?.items || []);
+  const [selectedLabelIds, setSelectedLabelIds] = useState<string[]>(initialData?.labelIds || []);
+
+  const selectedLabel = useMemo(() => {
+      const selected = labels.filter(l => selectedLabelIds.includes(l.id));
+      // Sort by priority desc (assuming priority field exists), else first selected
+      return selected.sort((a, b) => (b.priority || 0) - (a.priority || 0))[0];
+  }, [labels, selectedLabelIds]);
+
+  const getPreviewLabelStyle = useCallback((label: typeof labels[0]) => {
+    const styles: React.CSSProperties = {
+      position: "absolute",
+      backgroundColor: label.bgColor,
+      color: label.textColor,
+      padding: label.shape === "pill" ? "1px 3px" : "1px 2px",
+      fontSize: "8px", 
+      fontWeight: "bold",
+      zIndex: 10,
+      display: "flex",
+      alignItems: "center",
+      gap: "1px",
+      textTransform: "uppercase",
+      boxShadow: "0 1px 2px rgba(0,0,0,0.1)",
+      lineHeight: "1",
+      maxWidth: "90%",
+      whiteSpace: "nowrap",
+      overflow: "hidden",
+      textOverflow: "ellipsis",
+      pointerEvents: "none",
+    };
+
+    if (label.shape === "rounded") styles.borderRadius = "2px";
+    if (label.shape === "pill") styles.borderRadius = "8px";
+    if (label.shape === "square") styles.borderRadius = "0";
+
+    const offset = "2px";
+    if (label.position === "top-left") { styles.top = offset; styles.left = offset; }
+    if (label.position === "top-right") { styles.top = offset; styles.right = offset; }
+    if (label.position === "bottom-left") { styles.bottom = offset; styles.left = offset; }
+    if (label.position === "bottom-right") { styles.bottom = offset; styles.right = offset; }
+
+    return styles;
+  }, []);
+
   const [validationErrors, setValidationErrors] = useState<string[]>([]);
   const [nameError, setNameError] = useState("");
   const [discountError, setDiscountError] = useState("");
@@ -78,7 +122,7 @@ export function BundleForm({
         startDate,
         endDate,
         items,
-      });
+                labelIds: selectedLabelIds,      });
     } catch (error) {
       console.error("Error in onSubmit:", error);
     }
@@ -94,6 +138,7 @@ export function BundleForm({
     onSubmit,
     imageFile,
     image,
+    selectedLabelIds,
   ]);
 
   // Set default startDate on client-side only
@@ -196,7 +241,7 @@ export function BundleForm({
           startDate,
           endDate,
           items,
-        });
+                  labelIds: selectedLabelIds,        });
       } catch (error) {
         console.error("Error in onSubmit:", error);
       }
@@ -213,6 +258,7 @@ export function BundleForm({
       onSubmit,
       image,
       imageFile,
+      selectedLabelIds,
     ],
   );
 
@@ -270,6 +316,58 @@ export function BundleForm({
               placeholder="Describe the contents and value of this bundle..."
               rows={4}
             />
+
+            {/* Bundle Label Selection */}
+            <div>
+              <s-text type="strong" style={{marginBottom: "8px", display: "block", fontSize: "14px", fontWeight: 500}}>Bundle Labels</s-text>
+              <div style={{ maxHeight: "200px", overflowY: "auto", border: "1px solid #d1d5db", borderRadius: "4px", padding: "12px", backgroundColor: "white" }}>
+                {labels.length === 0 && <s-text tone="neutral">No labels available. Create one first.</s-text>}
+                {labels.map((l) => (
+                  <div key={l.id} style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "8px", padding: "4px 0", borderBottom: "1px solid #f3f4f6" }}>
+                    <input
+                      type="checkbox"
+                      id={`label-${l.id}`}
+                      checked={selectedLabelIds.includes(l.id)}
+                      onChange={(e) => {
+                        if (e.target.checked) {
+                          setSelectedLabelIds((prev) => [...prev, l.id]);
+                        } else {
+                          setSelectedLabelIds((prev) => prev.filter((id) => id !== l.id));
+                        }
+                      }}
+                      style={{ width: "16px", height: "16px", cursor: "pointer", accentColor: "#000" }}
+                    />
+                    <div style={{ flex: 1 }}>
+                      <label htmlFor={`label-${l.id}`} style={{ cursor: "pointer", fontWeight: 600, fontSize: "14px", display: "block" }}>
+                        {l.name}
+                      </label>
+                      <div style={{ fontSize: "12px", color: "#6b7280" }}>{l.text}</div>
+                    </div>
+                    {/* Mini Preview */}
+                    <div
+                      style={{
+                        backgroundColor: l.bgColor,
+                        color: l.textColor,
+                        padding: l.shape === "pill" ? "2px 8px" : "2px 6px",
+                        borderRadius: l.shape === "pill" ? "10px" : l.shape === "rounded" ? "4px" : "0",
+                        fontSize: "10px",
+                        fontWeight: "bold",
+                        textTransform: "uppercase",
+                        whiteSpace: "nowrap"
+                      }}
+                    >
+                      {l.text}
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <div style={{ marginTop: "4px" }}>
+                <s-text tone="neutral">
+                  Select one or more labels. The label with the highest priority will be shown.
+                </s-text>
+              </div>
+            </div>
+
             {/* Image Upload */}
             <div>
               <s-drop-zone
@@ -530,6 +628,7 @@ export function BundleForm({
                         justifyContent: "center",
                         overflow: "hidden",
                         flexShrink: 0,
+                        position: "relative",
                       }}
                     >
                       {item.image ? (
@@ -544,6 +643,12 @@ export function BundleForm({
                         />
                       ) : (
                         <s-icon type="image" />
+                      )}
+                      
+                      {selectedLabel && (
+                        <div style={getPreviewLabelStyle(selectedLabel)}>
+                          {selectedLabel.text}
+                        </div>
                       )}
                     </div>
                     <div style={{ flex: 1, minWidth: 0 }}>

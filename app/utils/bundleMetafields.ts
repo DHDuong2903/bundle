@@ -1,34 +1,36 @@
 import type { AdminApiContext } from "@shopify/shopify-app-react-router/server";
 import type { ProductItem } from "../types";
+import db from "../db.server";
 
-export interface BundleMetafieldData {
+/**
+ * Thông tin bundle đầy đủ lưu tại sản phẩm con
+ */
+export interface RelatedBundleInfo {
   bundleId: string;
-  name: string;
-  description: string | null;
-  imageUrl: string | null;
-
-  discountType: "percentage" | "fixed" | null;
+  bundleName: string;
+  bundlePrice: number;
+  originalPrice: number;
   discountValue: number | null;
-
+  discountType: string | null;
   active: boolean;
-
   items: {
     productId: string;
     variantId: string | null;
-    quantity: number;
+    title: string;
+    image: string;
     price: number;
-    title?: string;
-    variantTitle?: string;
-    handle?: string;
-    image?: string;
+    handle: string;
   }[];
-
-  originalPrice: number;
-  bundlePrice: number;
-  totalDiscount: number;
-
-  startDate: string | null;
-  endDate: string | null;
+  label?: {
+    text: string;
+    icon: string | null;
+    bgColor: string;
+    textColor: string;
+    position: string;
+    shape: string;
+    showOnPDP: boolean;
+    showOnCollection: boolean;
+  } | null;
 }
 
 export async function createOrUpdateBundleProduct(
@@ -45,200 +47,138 @@ export async function createOrUpdateBundleProduct(
     startDate: string | null;
     endDate: string | null;
     existingProductGid?: string | null;
+    labelId?: string | null;
   },
 ): Promise<{ success: boolean; productGid?: string; error?: string }> {
   try {
-    // 1. TÍNH GIÁ GỐC & DISCOUNT
-
-    const originalPrice = bundleData.items.reduce(
-      (sum, item) => sum + item.price,
-      0,
-    );
-
+    const originalPrice = bundleData.items.reduce((sum, item) => sum + item.price, 0);
     let bundlePrice = originalPrice;
-    let totalDiscount = 0;
 
-    if (
-      bundleData.discountType &&
-      bundleData.discountValue &&
-      bundleData.discountValue > 0
-    ) {
+    if (bundleData.discountType && bundleData.discountValue && bundleData.discountValue > 0) {
       if (bundleData.discountType === "percentage") {
-        bundlePrice =
-          originalPrice * (1 - bundleData.discountValue / 100);
-        totalDiscount = originalPrice - bundlePrice;
+        bundlePrice = originalPrice * (1 - bundleData.discountValue / 100);
       } else if (bundleData.discountType === "fixed") {
-        const totalFixedDiscount = bundleData.discountValue * bundleData.items.length;
-        bundlePrice = Math.max(
-          0,
-          originalPrice - totalFixedDiscount,
-        );
-        totalDiscount = originalPrice - bundlePrice;
+        bundlePrice = Math.max(0, originalPrice - (bundleData.discountValue * bundleData.items.length));
       }
     }
 
-    // 2. DANH SÁCH ITEM (KHÔNG DISCOUNT PER ITEM)
-
-    const items = bundleData.items.map((item) => ({
-      productId: item.productId,
-      variantId: item.variantId || null,
-      quantity: 1,
-      price: item.price,
-      title: item.title,
-      variantTitle: item.variant,
-      handle: item.handle,
-      image: item.image,
-    }));
-
-    // 3. METAFIELD DATA
-
-    const metafieldData: BundleMetafieldData = {
-      bundleId: bundleData.bundleId,
-      name: bundleData.name,
-      description: bundleData.description,
-      imageUrl: bundleData.imageUrl || null,
-
-      discountType: bundleData.discountType,
-      discountValue: bundleData.discountValue,
-
-      active: bundleData.active,
-      items,
-
-      originalPrice: Math.round(originalPrice * 100) / 100,
-      bundlePrice: Math.round(bundlePrice * 100) / 100,
-      totalDiscount: Math.round(totalDiscount * 100) / 100,
-
-      startDate: bundleData.startDate,
-      endDate: bundleData.endDate,
-    };
-
-    // 4. UPDATE PRODUCT BUNDLE
-    if (bundleData.existingProductGid) {
-      const response = await admin.graphql(
-        `#graphql
-        mutation productUpdate($id: ID!, $input: ProductUpdateInput!) {
-          productUpdate(id: $id, input: $input) {
-            product { id }
-            userErrors { field message }
-          }
-        }`,
-        {
-          variables: {
-            id: bundleData.existingProductGid,
-            input: {
-              title: bundleData.name,
-              descriptionHtml: bundleData.description,
-              status: bundleData.active ? "ACTIVE" : "DRAFT",
-              metafields: [
-                {
-                  namespace: "custom",
-                  key: "bundle_data",
-                  type: "json",
-                  value: JSON.stringify(metafieldData),
-                },
-              ],
-            },
-          },
-        },
-      );
-
-      const data = await response.json();
-      if (data.data?.productUpdate?.userErrors?.length) {
-        return {
-          success: false,
-          error: data.data.productUpdate.userErrors[0].message,
+    // Lấy thông tin Label nếu có
+    let labelInfo = null;
+    if (bundleData.labelId) {
+      const label = await db.label.findUnique({
+        where: { id: bundleData.labelId }
+      });
+      if (label) {
+        labelInfo = {
+          text: label.text,
+          icon: label.icon,
+          bgColor: label.bgColor,
+          textColor: label.textColor,
+          position: label.position,
+          shape: label.shape,
+          showOnPDP: label.showOnPDP,
+          showOnCollection: label.showOnCollection,
         };
       }
-
-      return { success: true, productGid: bundleData.existingProductGid };
     }
 
-    // 5. CREATE PRODUCT BUNDLE
-
-    const response = await admin.graphql(
-      `#graphql
-      mutation productCreate($input: ProductInput!) {
-        productCreate(input: $input) {
-          product { id }
-          userErrors { field message }
-        }
-      }`,
-      {
-        variables: {
-          input: {
-            title: `[Bundle] ${bundleData.name}`,
-            descriptionHtml: bundleData.description || "",
-            status: bundleData.active ? "ACTIVE" : "DRAFT",
-            productType: "Bundle",
-            vendor: "Bundle App",
-            metafields: [
-              {
-                namespace: "custom",
-                key: "bundle_data",
-                type: "json",
-                value: JSON.stringify(metafieldData),
-              },
-            ],
-          },
-        },
-      },
-    );
-
-    const data = await response.json();
-    if (data.data?.productCreate?.userErrors?.length) {
-      return {
-        success: false,
-        error: data.data.productCreate.userErrors[0].message,
-      };
-    }
-
-    const productGid = data.data?.productCreate?.product?.id;
-    if (!productGid) {
-      return { success: false, error: "Failed to create bundle product" };
-    }
-
-    return { success: true, productGid };
-  } catch (error) {
-    console.error("Error creating/updating bundle product:", error);
-    return {
-      success: false,
-      error: error instanceof Error ? error.message : "Unknown error",
+    const relatedInfo: RelatedBundleInfo = {
+        bundleId: bundleData.bundleId,
+        bundleName: bundleData.name,
+        bundlePrice: Math.round(bundlePrice * 100) / 100,
+        originalPrice: Math.round(originalPrice * 100) / 100,
+        discountValue: bundleData.discountValue,
+        discountType: bundleData.discountType,
+        active: bundleData.active,
+        label: labelInfo,
+        items: bundleData.items.map(i => ({
+            productId: i.productId,
+            variantId: i.variantId || null,
+            title: i.title || "",
+            image: i.image || "",
+            price: i.price || 0,
+            handle: i.handle || ""
+        })),
     };
+
+    await updateChildProductsReferences(admin, bundleData.items, relatedInfo);
+    return { success: true, productGid: "" };
+  } catch (error) {
+    console.error("Error syncing bundle to children:", error);
+    return { success: false, error: "Internal error during sync" };
   }
 }
 
-// DELETE BUNDLE PRODUCT
+async function updateChildProductsReferences(admin: AdminApiContext, items: any[], info: RelatedBundleInfo) {
+    for (const item of items) {
+        try {
+            const query = await admin.graphql(`#graphql
+                query getMeta($id: ID!) { 
+                  product(id: $id) { 
+                    metafield(namespace: "custom", key: "related_bundles") { value } 
+                  } 
+                }`,
+                { variables: { id: item.productId } }
+            );
+            const res = await query.json();
+            let list: RelatedBundleInfo[] = [];
+            const raw = res.data?.product?.metafield?.value;
+            if (raw) list = JSON.parse(raw);
 
-export async function deleteBundleProduct(
-  admin: AdminApiContext,
-  productGid: string,
-): Promise<{ success: boolean; error?: string }> {
-  try {
-    const response = await admin.graphql(
-      `#graphql
-      mutation productDelete($id: ID!) {
-        productDelete(input: { id: $id }) {
-          deletedProductId
-          userErrors { field message }
-        }
-      }`,
-      { variables: { id: productGid } },
-    );
+            list = list.filter(b => b.bundleId !== info.bundleId);
+            list.push(info);
 
-    const data = await response.json();
-    if (data.data?.productDelete?.userErrors?.length) {
-      return {
-        success: false,
-        error: data.data.productDelete.userErrors[0].message,
-      };
+            await admin.graphql(`#graphql
+                mutation setMeta($metafields: [MetafieldsSetInput!]!) { 
+                  metafieldsSet(metafields: $metafields) { userErrors { message } } 
+                }`,
+                { variables: { metafields: [{
+                    ownerId: item.productId,
+                    namespace: "custom",
+                    key: "related_bundles",
+                    type: "json",
+                    value: JSON.stringify(list)
+                }]}}
+            );
+        } catch (e) {}
+    }
+}
+
+export async function deleteBundleProduct(admin: AdminApiContext, productGid: string, bundleId: string, childIds: string[] = []) {
+    for (const pid of childIds) {
+        try {
+            const query = await admin.graphql(`#graphql
+                query getMeta($id: ID!) { 
+                  product(id: $id) { 
+                    metafield(namespace: "custom", key: "related_bundles") { value } 
+                  } 
+                }`,
+                { variables: { id: pid } }
+            );
+            const res = await query.json();
+            const raw = res.data?.product?.metafield?.value;
+            if (raw) {
+                let list: RelatedBundleInfo[] = JSON.parse(raw);
+                const newList = list.filter(b => b.bundleId !== bundleId);
+                await admin.graphql(`#graphql
+                    mutation setMeta($metafields: [MetafieldsSetInput!]!) { 
+                      metafieldsSet(metafields: $metafields) { userErrors { message } } 
+                    }`,
+                    { variables: { metafields: [{ 
+                        ownerId: pid, namespace: "custom", key: "related_bundles", type: "json", value: JSON.stringify(newList) 
+                    }]}}
+                );
+            }
+        } catch (e) {}
     }
 
+    if (productGid && productGid.startsWith("gid://")) {
+        try {
+            await admin.graphql(`#graphql
+                mutation del($id: ID!) { productDelete(input: { id: $id }) { deletedProductId } }`,
+                { variables: { id: productGid } }
+            );
+        } catch (e) {}
+    }
     return { success: true };
-  } catch (error) {
-    console.error("Error deleting bundle product:", error);
-    return {
-      success: false,
-      error: error instanceof Error ? error.message : "Unknown error",
-    };
-  }
 }

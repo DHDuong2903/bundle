@@ -3,32 +3,20 @@ query RunInput {
     lines {
       id
       quantity
-      isBundle: attribute(key: "_is_bundle_item") {
-        value
-      }
-      bundleId: attribute(key: "_bundle_id") {
-        value
-      }
-      bundleName: attribute(key: "_bundle_name") {
-        value
-      }
-      bundleDiscountValue: attribute(key: "_bundle_discount_value") {
-        value
-      }
-      bundleDiscountType: attribute(key: "_bundle_discount_type") {
-        value
-      }
-      cost {
-        amountPerQuantity {
-          amount
-        }
-      }
+      # Vẫn lấy attribute phòng trường hợp ép bundle thủ công
+      isBundleAttr: attribute(key: "_is_bundle") { value }
+      bundleIdAttr: attribute(key: "_bundle_id") { value }
+      
       merchandise {
         __typename
         ... on ProductVariant {
           id
-          metafield(namespace: "custom", key: "bundle_info") {
-            value
+          product {
+            id
+            # Lấy danh sách các bundle mà sản phẩm này thuộc về
+            metafield(namespace: "custom", key: "related_bundles") {
+              value
+            }
           }
         }
       }

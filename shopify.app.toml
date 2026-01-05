@@ -25,3 +25,8 @@ scopes = "read_orders,read_products,write_discounts,write_files,write_products"
 
 [auth]
 redirect_urls = [ "https://example.com/api/auth" ]
+
+[app_proxy]
+url = "https://example.com/api/storefront/bundles"
+subpath = "dhdbundle"
+prefix = "apps"
