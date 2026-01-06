@@ -216,6 +216,13 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
   }
 
   try {
+    // 1. Fetch old bundle items to identify removed products
+    const oldBundle = await db.bundle.findUnique({
+      where: { id: bundleId },
+      include: { items: { select: { productId: true } } }
+    });
+    const oldProductIds = oldBundle?.items.map(i => i.productId) || [];
+
     // Delete existing items and create new ones
     const bundle = await db.bundle.update({
       where: {
@@ -265,6 +272,7 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
       endDate: endDate || null,
       existingProductGid: bundle.bundleProductGid,
       labelId: labelIds[0] || null,
+      oldProductIds, // Pass old IDs here
     });
 
     if (result.success && result.productGid) {

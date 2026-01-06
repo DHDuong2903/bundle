@@ -29,9 +29,10 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
   // 1. Fetch active bundles with items and labels
   const now = new Date();
-  
-  const bundles = await db.bundle.findMany({
-    where: {
+  const handlesParam = url.searchParams.get("handles");
+  const handles = handlesParam ? handlesParam.split(",").filter(Boolean) : [];
+
+  const whereClause: any = {
       shopDomain: shop,
       active: true,
       startDate: { lte: now },
@@ -39,7 +40,19 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         { endDate: null },
         { endDate: { gte: now } }
       ]
-    },
+  };
+
+  // Optimization: If specific handles are requested, filter bundles that contain these items
+  if (handles.length > 0) {
+    whereClause.items = {
+      some: {
+        handle: { in: handles }
+      }
+    };
+  }
+  
+  const bundles = await db.bundle.findMany({
+    where: whereClause,
     include: {
       items: {
         select: { productId: true, handle: true }

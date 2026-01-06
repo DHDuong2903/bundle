@@ -22,11 +22,6 @@ export interface BundleFormData {
   startDate: string;
   endDate: string;
   items: ProductItem[];
-  // Badge settings
-  badgeText?: string;
-  badgeBgColor?: string;
-  badgeTextColor?: string;
-  badgePosition?: string;
 }
 
 export interface BundleData {
